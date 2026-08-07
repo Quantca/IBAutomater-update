@@ -51,8 +51,11 @@ public final class IBAutomater {
         int portNumber = Integer.parseInt(argValues[3]);
         boolean exportIbGatewayLogs = Boolean.parseBoolean(argValues[4]);
         boolean restarting = Boolean.parseBoolean(argValues[5]);
+        boolean preserveAccountGroupsWithAllocationMethods =
+            argValues.length > 6 && Boolean.parseBoolean(argValues[6]);
 
-        IBAutomater automater = new IBAutomater(userName, password, tradingMode, portNumber, exportIbGatewayLogs, restarting);
+        IBAutomater automater = new IBAutomater(userName, password, tradingMode, portNumber,
+            exportIbGatewayLogs, restarting, preserveAccountGroupsWithAllocationMethods);
     }
 
     /**
@@ -68,7 +71,27 @@ public final class IBAutomater {
      * soft daily restart and won't try to log in
      */
     public IBAutomater(String userName, String password, String tradingMode, int portNumber, boolean exportIbGatewayLogs, boolean restarting) {
-        this.settings = new Settings(userName, password, tradingMode, portNumber, exportIbGatewayLogs, restarting);
+        this(userName, password, tradingMode, portNumber, exportIbGatewayLogs, restarting, false);
+    }
+
+    /**
+     * Creates a new instance of the {@link IBAutomater} class.
+     *
+     * @param userName The IB user name
+     * @param password The IB password
+     * @param tradingMode The trading mode (allowed values are "live" and "paper")
+     * @param portNumber The socket port number to be used for API connections
+     * @param exportIbGatewayLogs If true, IBGateway logs will be exported at predefined times
+     * (currently at startup and when unknown windows are detected)
+     * @param restarting If true, the automater will assume the gateway is starting after a
+     * soft daily restart and won't try to log in
+     * @param preserveAccountGroupsWithAllocationMethods If true, the automater will leave the
+     * "Use Account Groups with Allocation Methods" check box unchanged
+     */
+    public IBAutomater(String userName, String password, String tradingMode, int portNumber,
+        boolean exportIbGatewayLogs, boolean restarting, boolean preserveAccountGroupsWithAllocationMethods) {
+        this.settings = new Settings(userName, password, tradingMode, portNumber, exportIbGatewayLogs,
+            restarting, preserveAccountGroupsWithAllocationMethods);
 
         try
         {

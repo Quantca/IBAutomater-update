@@ -25,8 +25,18 @@ After doing either of above steps you should now be ready to start using IBAutom
 ``` C#
 using QuantConnect.IBAutomater;
 
+var preserveAccountGroupsWithAllocationMethods = false;
+
 // Create a new instance of IBAutomater
-_ibAutomater = new IBAutomater.IBAutomater(ibDirectory, ibVersion, userName, password, tradingMode, port, exportIbGatewayLogs);
+_ibAutomater = new IBAutomater.IBAutomater(
+    ibDirectory,
+    ibVersion,
+    userName,
+    password,
+    tradingMode,
+    port,
+    exportIbGatewayLogs,
+    preserveAccountGroupsWithAllocationMethods);
 
 // You can bind to event handlers to receive the output data.
 _ibAutomater.OutputDataReceived += OnIbAutomaterOutputDataReceived;
@@ -46,6 +56,10 @@ _ibAutomater.Start(false);
 // Stop IB Gateway with a simple command.
 _ibAutomater.Stop();
 ```
+
+The original seven-parameter constructor remains supported and retains IBAutomater's established policy of deselecting the IB Gateway **Use Account Groups with Allocation Methods** setting when a recognized check box is present and selected. IBAutomater recognizes both the canonical label and the trailing-period form observed in Gateway 10.39. Pass `true` as the final parameter of the new overload to preserve the recognized check box's current state. This does not select, validate, or require the setting; an unavailable or unrecognized check box is left untouched. The value is retained when the same IBAutomater instance restarts IB Gateway and must be supplied before calling `Start`.
+
+For standalone execution, `config.json` can optionally specify `"ib-financial-advisors-unified-groups-enabled": true`; when omitted, the setting defaults to `false`. Library consumers, including LEAN, must pass the corresponding value to the constructor themselves.
 
 ## How it works
 

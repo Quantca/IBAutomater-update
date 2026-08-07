@@ -27,6 +27,7 @@ public class Settings {
     private final int portNumber;
     private final boolean exportIbGatewayLogs;
     private final boolean restarting;
+    private final boolean preserveAccountGroupsWithAllocationMethods;
 
     /**
      * Creates a new instance of the {@link Settings} class.
@@ -41,12 +42,32 @@ public class Settings {
      * soft daily restart and won't try to log in
      */
     public Settings(String userName, String password, String tradingMode, int portNumber, boolean exportIbGatewayLogs, boolean restarting) {
+        this(userName, password, tradingMode, portNumber, exportIbGatewayLogs, restarting, false);
+    }
+
+    /**
+     * Creates a new instance of the {@link Settings} class.
+     *
+     * @param userName The IB user name
+     * @param password The IB password
+     * @param tradingMode The trading mode (allowed values are "live" and "paper")
+     * @param portNumber The socket port number to be used for API connections
+     * @param exportIbGatewayLogs If true, IBGateway logs will be exported at predefined times
+     * (currently at startup and when unknown windows are detected)
+     * @param restarting If true, the automater will assume the gateway is starting after a
+     * soft daily restart and won't try to log in
+     * @param preserveAccountGroupsWithAllocationMethods If true, the automater will leave the
+     * "Use Account Groups with Allocation Methods" check box unchanged
+     */
+    public Settings(String userName, String password, String tradingMode, int portNumber,
+        boolean exportIbGatewayLogs, boolean restarting, boolean preserveAccountGroupsWithAllocationMethods) {
         this.userName = userName;
         this.password = password;
         this.tradingMode = tradingMode;
         this.portNumber = portNumber;
         this.exportIbGatewayLogs = exportIbGatewayLogs;
         this.restarting = restarting;
+        this.preserveAccountGroupsWithAllocationMethods = preserveAccountGroupsWithAllocationMethods;
     }
 
     /**
@@ -102,5 +123,13 @@ public class Settings {
     public boolean getRestarting() {
         return this.restarting;
     }
-}
 
+    /**
+     * Gets whether the "Use Account Groups with Allocation Methods" check box should be preserved.
+     *
+     * @return Returns true if the check box should be left unchanged
+     */
+    public boolean getPreserveAccountGroupsWithAllocationMethods() {
+        return this.preserveAccountGroupsWithAllocationMethods;
+    }
+}

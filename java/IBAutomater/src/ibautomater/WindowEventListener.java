@@ -658,7 +658,7 @@ public class WindowEventListener implements AWTEventListener {
      *   - deselects the "Read-Only API" check box
      *   - sets the API Port Number
      *   - selects the "Create API message log file" check box
-     *   - deselects the "Use Account Groups with Allocation Methods" check box
+     *   - conditionally deselects the "Use Account Groups with Allocation Methods" check box
      * - in the Configuration/API/Precautions panel:
      *   - selects the "Bypass Order Precautions for API Orders" check box
      * - in the Configuration/Lock and Exit panel:
@@ -718,8 +718,23 @@ public class WindowEventListener implements AWTEventListener {
 
         // v983+
         String faText = "Use Account Groups with Allocation Methods";
+        boolean preserveAccountGroupsWithAllocationMethods =
+            this.automater.getSettings().getPreserveAccountGroupsWithAllocationMethods();
         JCheckBox faCheckBox = Common.getCheckBox(window, faText);
-        if (faCheckBox != null && faCheckBox.isSelected()) {
+        if (faCheckBox == null) {
+            // Gateway 10.39 includes a trailing period in the check box label.
+            faCheckBox = Common.getCheckBox(window, faText + ".");
+        }
+        if (faCheckBox == null) {
+            if (preserveAccountGroupsWithAllocationMethods) {
+                this.automater.logMessage("Checkbox not found: [" + faText + "]");
+            }
+        }
+        else if (preserveAccountGroupsWithAllocationMethods) {
+            this.automater.logMessage("Leaving checkbox unchanged: [" + faText +
+                "] - Selected: [" + faCheckBox.isSelected() + "]");
+        }
+        else if (faCheckBox.isSelected()) {
             this.automater.logMessage("Unselect checkbox: [" + faText + "]");
             faCheckBox.setSelected(false);
         }

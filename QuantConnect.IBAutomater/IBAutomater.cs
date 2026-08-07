@@ -41,6 +41,7 @@ namespace QuantConnect.IBAutomater
         private readonly string _tradingMode;
         private readonly int _portNumber;
         private readonly bool _exportIbGatewayLogs;
+        private readonly bool _preserveAccountGroupsWithAllocationMethods;
 
         private volatile bool _isDisposeCalled;
 
@@ -135,9 +136,23 @@ namespace QuantConnect.IBAutomater
                 ibVersion = config["ib-version"].ToString();
             }
             var exportIbGatewayLogs = config["ib-export-ibgateway-logs"].ToObject<bool>();
+            var preserveAccountGroupsWithAllocationMethods = false;
+            if (config["ib-financial-advisors-unified-groups-enabled"] != null)
+            {
+                preserveAccountGroupsWithAllocationMethods =
+                    config["ib-financial-advisors-unified-groups-enabled"].ToObject<bool>();
+            }
 
             // Create a new instance of the IBAutomater class
-            using var automater = new IBAutomater(ibDirectory, ibVersion, userName, password, tradingMode, portNumber, exportIbGatewayLogs);
+            using var automater = new IBAutomater(
+                ibDirectory,
+                ibVersion,
+                userName,
+                password,
+                tradingMode,
+                portNumber,
+                exportIbGatewayLogs,
+                preserveAccountGroupsWithAllocationMethods);
 
             // Attach the event handlers
             automater.OutputDataReceived += (s, e) => Console.WriteLine($"{DateTime.UtcNow:O} {e.Data}");
@@ -181,6 +196,32 @@ namespace QuantConnect.IBAutomater
         /// <param name="portNumber">The API port number</param>
         /// <param name="exportIbGatewayLogs">Export IB Gateway logs if true</param>
         public IBAutomater(string ibDirectory, string ibVersion, string userName, string password, string tradingMode, int portNumber, bool exportIbGatewayLogs)
+            : this(ibDirectory, ibVersion, userName, password, tradingMode, portNumber, exportIbGatewayLogs, false)
+        {
+        }
+
+        /// <summary>
+        /// Creates a new instance of the <see cref="IBAutomater"/> class
+        /// </summary>
+        /// <param name="ibDirectory">The root directory of IB Gateway</param>
+        /// <param name="ibVersion">The IB Gateway version to launch</param>
+        /// <param name="userName">The user name</param>
+        /// <param name="password">The password</param>
+        /// <param name="tradingMode">The trading mode ('paper' or 'live')</param>
+        /// <param name="portNumber">The API port number</param>
+        /// <param name="exportIbGatewayLogs">Export IB Gateway logs if true</param>
+        /// <param name="preserveAccountGroupsWithAllocationMethods">
+        /// Leave the Use Account Groups with Allocation Methods setting unchanged if true
+        /// </param>
+        public IBAutomater(
+            string ibDirectory,
+            string ibVersion,
+            string userName,
+            string password,
+            string tradingMode,
+            int portNumber,
+            bool exportIbGatewayLogs,
+            bool preserveAccountGroupsWithAllocationMethods)
         {
             _ibDirectory = ibDirectory;
             _ibVersion = ibVersion;
@@ -189,6 +230,7 @@ namespace QuantConnect.IBAutomater
             _tradingMode = tradingMode;
             _portNumber = portNumber;
             _exportIbGatewayLogs = exportIbGatewayLogs;
+            _preserveAccountGroupsWithAllocationMethods = preserveAccountGroupsWithAllocationMethods;
 
             _timerLogReader = new Timer(LogReaderTimerCallback, null, Timeout.Infinite, Timeout.Infinite);
 
@@ -1261,7 +1303,8 @@ namespace QuantConnect.IBAutomater
 
             if (enableJavaAgent)
             {
-                File.WriteAllText(javaAgentConfigFileName, $"{_userName}\n{_password}\n{_tradingMode}\n{_portNumber}\n{_exportIbGatewayLogs}\n{isRestart}");
+                File.WriteAllText(javaAgentConfigFileName,
+                    $"{_userName}\n{_password}\n{_tradingMode}\n{_portNumber}\n{_exportIbGatewayLogs}\n{isRestart}\n{_preserveAccountGroupsWithAllocationMethods}");
             }
             else
             {
