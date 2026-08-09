@@ -189,6 +189,7 @@ namespace QuantConnect.IBAutomater
 
         /// <summary>
         /// Creates a new instance of the <see cref="IBAutomater"/> class
+        /// and retains the established behavior of deselecting the Use Account Groups with Allocation Methods setting
         /// </summary>
         /// <param name="ibDirectory">The root directory of IB Gateway</param>
         /// <param name="ibVersion">The IB Gateway version to launch</param>
@@ -213,7 +214,8 @@ namespace QuantConnect.IBAutomater
         /// <param name="portNumber">The API port number</param>
         /// <param name="exportIbGatewayLogs">Export IB Gateway logs if true</param>
         /// <param name="useAccountGroupsWithAllocationMethods">
-        /// Enable the Use Account Groups with Allocation Methods setting if true
+        /// The desired state of the Use Account Groups with Allocation Methods setting:
+        /// true selects it; false deselects it
         /// </param>
         public IBAutomater(
             string ibDirectory,

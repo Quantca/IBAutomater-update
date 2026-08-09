@@ -31,6 +31,8 @@ public class Settings {
 
     /**
      * Creates a new instance of the {@link Settings} class.
+     * This overload retains the established behavior of deselecting the
+     * "Use Account Groups with Allocation Methods" check box.
      *
      * @param userName The IB user name
      * @param password The IB password
@@ -56,8 +58,8 @@ public class Settings {
      * (currently at startup and when unknown windows are detected)
      * @param restarting If true, the automater will assume the gateway is starting after a
      * soft daily restart and won't try to log in
-     * @param useAccountGroupsWithAllocationMethods If true, the automater will select the
-     * "Use Account Groups with Allocation Methods" check box
+     * @param useAccountGroupsWithAllocationMethods The desired state of the
+     * "Use Account Groups with Allocation Methods" check box: true selects it; false deselects it
      */
     public Settings(String userName, String password, String tradingMode, int portNumber,
         boolean exportIbGatewayLogs, boolean restarting, boolean useAccountGroupsWithAllocationMethods) {
