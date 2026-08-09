@@ -27,7 +27,7 @@ public class Settings {
     private final int portNumber;
     private final boolean exportIbGatewayLogs;
     private final boolean restarting;
-    private final boolean preserveAccountGroupsWithAllocationMethods;
+    private final boolean useAccountGroupsWithAllocationMethods;
 
     /**
      * Creates a new instance of the {@link Settings} class.
@@ -56,18 +56,18 @@ public class Settings {
      * (currently at startup and when unknown windows are detected)
      * @param restarting If true, the automater will assume the gateway is starting after a
      * soft daily restart and won't try to log in
-     * @param preserveAccountGroupsWithAllocationMethods If true, the automater will leave the
-     * "Use Account Groups with Allocation Methods" check box unchanged
+     * @param useAccountGroupsWithAllocationMethods If true, the automater will select the
+     * "Use Account Groups with Allocation Methods" check box
      */
     public Settings(String userName, String password, String tradingMode, int portNumber,
-        boolean exportIbGatewayLogs, boolean restarting, boolean preserveAccountGroupsWithAllocationMethods) {
+        boolean exportIbGatewayLogs, boolean restarting, boolean useAccountGroupsWithAllocationMethods) {
         this.userName = userName;
         this.password = password;
         this.tradingMode = tradingMode;
         this.portNumber = portNumber;
         this.exportIbGatewayLogs = exportIbGatewayLogs;
         this.restarting = restarting;
-        this.preserveAccountGroupsWithAllocationMethods = preserveAccountGroupsWithAllocationMethods;
+        this.useAccountGroupsWithAllocationMethods = useAccountGroupsWithAllocationMethods;
     }
 
     /**
@@ -125,11 +125,11 @@ public class Settings {
     }
 
     /**
-     * Gets whether the "Use Account Groups with Allocation Methods" check box should be preserved.
+     * Gets whether the "Use Account Groups with Allocation Methods" check box should be selected.
      *
-     * @return Returns true if the check box should be left unchanged
+     * @return Returns true if the check box should be selected
      */
-    public boolean getPreserveAccountGroupsWithAllocationMethods() {
-        return this.preserveAccountGroupsWithAllocationMethods;
+    public boolean getUseAccountGroupsWithAllocationMethods() {
+        return this.useAccountGroupsWithAllocationMethods;
     }
 }

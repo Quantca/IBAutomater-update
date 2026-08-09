@@ -41,7 +41,7 @@ namespace QuantConnect.IBAutomater
         private readonly string _tradingMode;
         private readonly int _portNumber;
         private readonly bool _exportIbGatewayLogs;
-        private readonly bool _preserveAccountGroupsWithAllocationMethods;
+        private readonly bool _useAccountGroupsWithAllocationMethods;
 
         private volatile bool _isDisposeCalled;
 
@@ -94,6 +94,8 @@ namespace QuantConnect.IBAutomater
         private CancellationTokenSource _gatewaySoftRestartTokenSource;
 
         private const string _ibGatewayExecutableOriginalName = "ibgateway";
+        private const string FinancialAdvisorAllocationGroupsConfigurationUnavailableMarker =
+            "Error: Financial Advisor allocation groups configuration unavailable:";
         private readonly string _ibGatewayExecutableName = $"{_ibGatewayExecutableOriginalName}1";
         private bool _renamedIbGatewayExcecutable;
 
@@ -136,10 +138,10 @@ namespace QuantConnect.IBAutomater
                 ibVersion = config["ib-version"].ToString();
             }
             var exportIbGatewayLogs = config["ib-export-ibgateway-logs"].ToObject<bool>();
-            var preserveAccountGroupsWithAllocationMethods = false;
+            var useAccountGroupsWithAllocationMethods = false;
             if (config["ib-financial-advisors-unified-groups-enabled"] != null)
             {
-                preserveAccountGroupsWithAllocationMethods =
+                useAccountGroupsWithAllocationMethods =
                     config["ib-financial-advisors-unified-groups-enabled"].ToObject<bool>();
             }
 
@@ -152,7 +154,7 @@ namespace QuantConnect.IBAutomater
                 tradingMode,
                 portNumber,
                 exportIbGatewayLogs,
-                preserveAccountGroupsWithAllocationMethods);
+                useAccountGroupsWithAllocationMethods);
 
             // Attach the event handlers
             automater.OutputDataReceived += (s, e) => Console.WriteLine($"{DateTime.UtcNow:O} {e.Data}");
@@ -210,8 +212,8 @@ namespace QuantConnect.IBAutomater
         /// <param name="tradingMode">The trading mode ('paper' or 'live')</param>
         /// <param name="portNumber">The API port number</param>
         /// <param name="exportIbGatewayLogs">Export IB Gateway logs if true</param>
-        /// <param name="preserveAccountGroupsWithAllocationMethods">
-        /// Leave the Use Account Groups with Allocation Methods setting unchanged if true
+        /// <param name="useAccountGroupsWithAllocationMethods">
+        /// Enable the Use Account Groups with Allocation Methods setting if true
         /// </param>
         public IBAutomater(
             string ibDirectory,
@@ -221,7 +223,7 @@ namespace QuantConnect.IBAutomater
             string tradingMode,
             int portNumber,
             bool exportIbGatewayLogs,
-            bool preserveAccountGroupsWithAllocationMethods)
+            bool useAccountGroupsWithAllocationMethods)
         {
             _ibDirectory = ibDirectory;
             _ibVersion = ibVersion;
@@ -230,7 +232,7 @@ namespace QuantConnect.IBAutomater
             _tradingMode = tradingMode;
             _portNumber = portNumber;
             _exportIbGatewayLogs = exportIbGatewayLogs;
-            _preserveAccountGroupsWithAllocationMethods = preserveAccountGroupsWithAllocationMethods;
+            _useAccountGroupsWithAllocationMethods = useAccountGroupsWithAllocationMethods;
 
             _timerLogReader = new Timer(LogReaderTimerCallback, null, Timeout.Infinite, Timeout.Infinite);
 
@@ -641,6 +643,15 @@ namespace QuantConnect.IBAutomater
                     _ibAutomaterInitializeEvent.Set();
                 }
 
+                // the requested Financial Advisor allocation groups configuration is unavailable
+                else if (text.StartsWith(FinancialAdvisorAllocationGroupsConfigurationUnavailableMarker,
+                    StringComparison.InvariantCultureIgnoreCase))
+                {
+                    _lastStartResult = new StartResult(
+                        ErrorCode.FinancialAdvisorAllocationGroupsConfigurationUnavailable,
+                        text);
+                }
+
                 // initialization completed
                 else if (text.Contains("Configuration settings updated", StringComparison.InvariantCultureIgnoreCase))
                 {
@@ -690,7 +701,10 @@ namespace QuantConnect.IBAutomater
                 {
                     TraceIbLauncherLogFile();
 
-                    _lastStartResult = new StartResult(ErrorCode.InitializationTimeout, "Auto-restart timed out");
+                    _lastStartResult =
+                        startResult.ErrorCode == ErrorCode.FinancialAdvisorAllocationGroupsConfigurationUnavailable
+                            ? startResult
+                            : new StartResult(ErrorCode.InitializationTimeout, "Auto-restart timed out");
 
                     // the relaunched gateway may still be running (e.g. the token-expired dialog
                     // text changed and fell through to an unknown-window error, or initialization
@@ -1304,7 +1318,7 @@ namespace QuantConnect.IBAutomater
             if (enableJavaAgent)
             {
                 File.WriteAllText(javaAgentConfigFileName,
-                    $"{_userName}\n{_password}\n{_tradingMode}\n{_portNumber}\n{_exportIbGatewayLogs}\n{isRestart}\n{_preserveAccountGroupsWithAllocationMethods}");
+                    $"{_userName}\n{_password}\n{_tradingMode}\n{_portNumber}\n{_exportIbGatewayLogs}\n{isRestart}\n{_useAccountGroupsWithAllocationMethods}");
             }
             else
             {

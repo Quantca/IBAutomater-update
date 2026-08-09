@@ -51,11 +51,11 @@ public final class IBAutomater {
         int portNumber = Integer.parseInt(argValues[3]);
         boolean exportIbGatewayLogs = Boolean.parseBoolean(argValues[4]);
         boolean restarting = Boolean.parseBoolean(argValues[5]);
-        boolean preserveAccountGroupsWithAllocationMethods =
+        boolean useAccountGroupsWithAllocationMethods =
             argValues.length > 6 && Boolean.parseBoolean(argValues[6]);
 
         IBAutomater automater = new IBAutomater(userName, password, tradingMode, portNumber,
-            exportIbGatewayLogs, restarting, preserveAccountGroupsWithAllocationMethods);
+            exportIbGatewayLogs, restarting, useAccountGroupsWithAllocationMethods);
     }
 
     /**
@@ -85,13 +85,13 @@ public final class IBAutomater {
      * (currently at startup and when unknown windows are detected)
      * @param restarting If true, the automater will assume the gateway is starting after a
      * soft daily restart and won't try to log in
-     * @param preserveAccountGroupsWithAllocationMethods If true, the automater will leave the
-     * "Use Account Groups with Allocation Methods" check box unchanged
+     * @param useAccountGroupsWithAllocationMethods If true, the automater will select the
+     * "Use Account Groups with Allocation Methods" check box
      */
     public IBAutomater(String userName, String password, String tradingMode, int portNumber,
-        boolean exportIbGatewayLogs, boolean restarting, boolean preserveAccountGroupsWithAllocationMethods) {
+        boolean exportIbGatewayLogs, boolean restarting, boolean useAccountGroupsWithAllocationMethods) {
         this.settings = new Settings(userName, password, tradingMode, portNumber, exportIbGatewayLogs,
-            restarting, preserveAccountGroupsWithAllocationMethods);
+            restarting, useAccountGroupsWithAllocationMethods);
 
         try
         {

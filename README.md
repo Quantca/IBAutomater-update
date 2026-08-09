@@ -25,7 +25,7 @@ After doing either of above steps you should now be ready to start using IBAutom
 ``` C#
 using QuantConnect.IBAutomater;
 
-var preserveAccountGroupsWithAllocationMethods = false;
+var useAccountGroupsWithAllocationMethods = false;
 
 // Create a new instance of IBAutomater
 _ibAutomater = new IBAutomater.IBAutomater(
@@ -36,7 +36,7 @@ _ibAutomater = new IBAutomater.IBAutomater(
     tradingMode,
     port,
     exportIbGatewayLogs,
-    preserveAccountGroupsWithAllocationMethods);
+    useAccountGroupsWithAllocationMethods);
 
 // You can bind to event handlers to receive the output data.
 _ibAutomater.OutputDataReceived += OnIbAutomaterOutputDataReceived;
@@ -57,7 +57,9 @@ _ibAutomater.Start(false);
 _ibAutomater.Stop();
 ```
 
-The original seven-parameter constructor remains supported and retains IBAutomater's established policy of deselecting the IB Gateway **Use Account Groups with Allocation Methods** setting when a recognized check box is present and selected. IBAutomater recognizes both the canonical label and the trailing-period form observed in Gateway 10.39. Pass `true` as the final parameter of the new overload to preserve the recognized check box's current state. This does not select, validate, or require the setting; an unavailable or unrecognized check box is left untouched. The value is retained when the same IBAutomater instance restarts IB Gateway and must be supplied before calling `Start`.
+The original seven-parameter constructor remains supported and retains IBAutomater's established policy of deselecting the IB Gateway **Use Account Groups with Allocation Methods** setting when the recognized check box is selected. The final parameter of the new overload specifies the desired state: `true` selects the setting and `false` deselects it. IBAutomater locates the control by a case-insensitive match on the stable beginning of its label, accommodating terminal punctuation and other trailing text without broadening other check-box lookups.
+
+The value is fixed when the IBAutomater instance is constructed and is applied again on explicit and automatic IB Gateway restarts. When `true`, IBAutomater fails startup or restart if the v983+ control is absent, or if it is disabled while unchecked, because unified Financial Advisor allocation-group routing cannot then be established safely. The returned `StartResult` explains how to verify the Gateway version and account configuration before redeploying.
 
 For standalone execution, `config.json` can optionally specify `"ib-financial-advisors-unified-groups-enabled": true`; when omitted, the setting defaults to `false`. Library consumers, including LEAN, must pass the corresponding value to the constructor themselves.
 

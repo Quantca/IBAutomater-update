@@ -100,7 +100,12 @@ namespace QuantConnect.IBAutomater
         /// <summary>
         /// During login the gateway presented blocking account tasks we could not get past
         /// </summary>
-        LoginFailedAccountTasksRequired
+        LoginFailedAccountTasksRequired,
+
+        /// <summary>
+        /// The requested Financial Advisor allocation groups configuration is unavailable
+        /// </summary>
+        FinancialAdvisorAllocationGroupsConfigurationUnavailable
     }
 
     /// <summary>
@@ -174,6 +179,11 @@ namespace QuantConnect.IBAutomater
                 {
                     ErrorCode.LoginFailedAccountTasksRequired,
                     "Login to the IB Gateway failed because a user account-task is required. Please download the IB Gateway and follow the instructions provided https://www.interactivebrokers.com/en/trading/ibgateway-stable.php."
+                },
+                {
+                    ErrorCode.FinancialAdvisorAllocationGroupsConfigurationUnavailable,
+                    "Unified Financial Advisor allocation groups require IB Gateway v983 or later and the Use Account Groups with Allocation Methods setting to be available. " +
+                    "On a supported version, verify that the current account and configuration expose the setting, then correct the environment and redeploy."
                 }
             };
 

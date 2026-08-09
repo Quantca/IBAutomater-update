@@ -658,7 +658,7 @@ public class WindowEventListener implements AWTEventListener {
      *   - deselects the "Read-Only API" check box
      *   - sets the API Port Number
      *   - selects the "Create API message log file" check box
-     *   - conditionally deselects the "Use Account Groups with Allocation Methods" check box
+     *   - sets the "Use Account Groups with Allocation Methods" check box according to configuration
      * - in the Configuration/API/Precautions panel:
      *   - selects the "Bypass Order Precautions for API Orders" check box
      * - in the Configuration/Lock and Exit panel:
@@ -718,21 +718,40 @@ public class WindowEventListener implements AWTEventListener {
 
         // v983+
         String faText = "Use Account Groups with Allocation Methods";
-        boolean preserveAccountGroupsWithAllocationMethods =
-            this.automater.getSettings().getPreserveAccountGroupsWithAllocationMethods();
-        JCheckBox faCheckBox = Common.getCheckBox(window, faText);
-        if (faCheckBox == null) {
-            // Gateway 10.39 includes a trailing period in the check box label.
-            faCheckBox = Common.getCheckBox(window, faText + ".");
-        }
-        if (faCheckBox == null) {
-            if (preserveAccountGroupsWithAllocationMethods) {
-                this.automater.logMessage("Checkbox not found: [" + faText + "]");
+        boolean useAccountGroupsWithAllocationMethods =
+            this.automater.getSettings().getUseAccountGroupsWithAllocationMethods();
+        JCheckBox faCheckBox = null;
+        for (Component component : Common.getComponents(window)) {
+            if (component instanceof JCheckBox) {
+                JCheckBox checkBox = (JCheckBox)component;
+                String checkBoxText = checkBox.getText();
+                if (checkBoxText != null &&
+                    checkBoxText.regionMatches(true, 0, faText, 0, faText.length())) {
+                    faCheckBox = checkBox;
+                    break;
+                }
             }
         }
-        else if (preserveAccountGroupsWithAllocationMethods) {
-            this.automater.logMessage("Leaving checkbox unchanged: [" + faText +
-                "] - Selected: [" + faCheckBox.isSelected() + "]");
+        if (faCheckBox == null) {
+            if (useAccountGroupsWithAllocationMethods) {
+                this.automater.logMessage(
+                    "Error: Financial Advisor allocation groups configuration unavailable: [" + faText +
+                    "] - Reason: [check box not found]");
+            }
+        }
+        else if (useAccountGroupsWithAllocationMethods) {
+            if (!faCheckBox.isSelected() && !faCheckBox.isEnabled()) {
+                this.automater.logMessage(
+                    "Error: Financial Advisor allocation groups configuration unavailable: [" + faText +
+                    "] - Reason: [check box is disabled and unchecked]");
+            }
+            else {
+                if (!faCheckBox.isSelected()) {
+                    this.automater.logMessage("Select checkbox: [" + faText + "]");
+                    faCheckBox.setSelected(true);
+                }
+                this.automater.logMessage("Checkbox: [" + faText + "] - Selected: [true]");
+            }
         }
         else if (faCheckBox.isSelected()) {
             this.automater.logMessage("Unselect checkbox: [" + faText + "]");
