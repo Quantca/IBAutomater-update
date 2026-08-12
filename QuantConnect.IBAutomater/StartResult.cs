@@ -105,7 +105,12 @@ namespace QuantConnect.IBAutomater
         /// <summary>
         /// The requested Financial Advisor allocation groups setting could not be applied or verified
         /// </summary>
-        FinancialAdvisorAllocationGroupsConfigurationUnavailable
+        FinancialAdvisorAllocationGroupsConfigurationUnavailable,
+
+        /// <summary>
+        /// Mobile Authenticator login could not be completed
+        /// </summary>
+        MobileAuthenticatorAuthenticationFailed = 17
     }
 
     /// <summary>
@@ -143,8 +148,7 @@ namespace QuantConnect.IBAutomater
                 },
                 {
                     ErrorCode.SecurityDialogDetected,
-                    "A security dialog was detected for Code Card Authentication. " +
-                    "Only 'Seamless Authentication' via IBKR mobile app is supported."
+                    "A security dialog was detected for Code Card Authentication, which is not supported."
                 },
                 {
                     ErrorCode.TwoFactorConfirmationTimeout,
@@ -185,6 +189,11 @@ namespace QuantConnect.IBAutomater
                     "The requested Use Account Groups with Allocation Methods setting could not be applied or verified. " +
                     "Enabling unified Financial Advisor allocation groups requires IB Gateway v983 or later. " +
                     "Verify the Gateway version, account configuration, and requested setting before redeploying."
+                },
+                {
+                    ErrorCode.MobileAuthenticatorAuthenticationFailed,
+                    "Mobile Authenticator configuration, automation, or authentication could not be completed. " +
+                    "No additional authentication codes will be submitted by this IBAutomater instance."
                 }
             };
 

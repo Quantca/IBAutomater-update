@@ -28,6 +28,8 @@ public class Settings {
     private final boolean exportIbGatewayLogs;
     private final boolean restarting;
     private final boolean useAccountGroupsWithAllocationMethods;
+    private final TwoFactorAuthenticationMethod twoFactorAuthenticationMethod;
+    private final TotpGenerator totpGenerator;
 
     /**
      * Creates a new instance of the {@link Settings} class.
@@ -63,6 +65,59 @@ public class Settings {
      */
     public Settings(String userName, String password, String tradingMode, int portNumber,
         boolean exportIbGatewayLogs, boolean restarting, boolean useAccountGroupsWithAllocationMethods) {
+        this(userName, password, tradingMode, portNumber, exportIbGatewayLogs, restarting,
+            useAccountGroupsWithAllocationMethods, TwoFactorAuthenticationMethod.IB_KEY, null);
+    }
+
+    /**
+     * Creates a new instance of the {@link Settings} class.
+     *
+     * @param userName The IB user name
+     * @param password The IB password
+     * @param tradingMode The trading mode (allowed values are "live" and "paper")
+     * @param portNumber The socket port number to be used for API connections
+     * @param exportIbGatewayLogs If true, IBGateway logs will be exported at predefined times
+     * @param restarting If true, the automater will assume the gateway is starting after a
+     * soft daily restart and won't try to log in
+     * @param useAccountGroupsWithAllocationMethods The desired state of the
+     * "Use Account Groups with Allocation Methods" check box
+     * @param twoFactorAuthenticationMethod The two-factor authentication method
+     * @param mobileAuthenticatorSecret The Base32 setup key for Gateway's
+     * "Mobile Authenticator app" option
+     * @throws IllegalArgumentException If the authentication method and setup key are invalid
+     */
+    Settings(String userName, String password, String tradingMode, int portNumber,
+        boolean exportIbGatewayLogs, boolean restarting, boolean useAccountGroupsWithAllocationMethods,
+        TwoFactorAuthenticationMethod twoFactorAuthenticationMethod, String mobileAuthenticatorSecret) {
+        if (twoFactorAuthenticationMethod == null) {
+            throw new IllegalArgumentException("Two-factor authentication method is required");
+        }
+
+        if (mobileAuthenticatorSecret != null) {
+            for (int index = 0; index < mobileAuthenticatorSecret.length(); index++) {
+                char character = mobileAuthenticatorSecret.charAt(index);
+                if (character == '\r' || character == '\n' || character == '\0') {
+                    throw new IllegalArgumentException("Invalid Mobile Authenticator setup secret");
+                }
+            }
+        }
+
+        boolean hasSecret = mobileAuthenticatorSecret != null
+            && mobileAuthenticatorSecret.trim().length() > 0;
+        if (twoFactorAuthenticationMethod == TwoFactorAuthenticationMethod.MOBILE_AUTHENTICATOR) {
+            if (!hasSecret) {
+                throw new IllegalArgumentException("Mobile Authenticator setup secret is required");
+            }
+            this.totpGenerator = new TotpGenerator(mobileAuthenticatorSecret);
+        }
+        else {
+            if (hasSecret) {
+                throw new IllegalArgumentException(
+                    "Mobile Authenticator setup secret requires Mobile Authenticator authentication");
+            }
+            this.totpGenerator = null;
+        }
+
         this.userName = userName;
         this.password = password;
         this.tradingMode = tradingMode;
@@ -70,6 +125,7 @@ public class Settings {
         this.exportIbGatewayLogs = exportIbGatewayLogs;
         this.restarting = restarting;
         this.useAccountGroupsWithAllocationMethods = useAccountGroupsWithAllocationMethods;
+        this.twoFactorAuthenticationMethod = twoFactorAuthenticationMethod;
     }
 
     /**
@@ -133,5 +189,23 @@ public class Settings {
      */
     public boolean getUseAccountGroupsWithAllocationMethods() {
         return this.useAccountGroupsWithAllocationMethods;
+    }
+
+    /**
+     * Gets the configured two-factor authentication method.
+     *
+     * @return The configured two-factor authentication method
+     */
+    TwoFactorAuthenticationMethod getTwoFactorAuthenticationMethod() {
+        return this.twoFactorAuthenticationMethod;
+    }
+
+    /**
+     * Gets the Mobile Authenticator TOTP generator.
+     *
+     * @return The generator, or null when IB Key is configured
+     */
+    TotpGenerator getTotpGenerator() {
+        return this.totpGenerator;
     }
 }

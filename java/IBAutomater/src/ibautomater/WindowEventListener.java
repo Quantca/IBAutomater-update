@@ -29,6 +29,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -53,6 +54,7 @@ import javax.swing.JToggleButton;
 import javax.swing.JTree;
 import javax.swing.ListModel;
 import javax.swing.SwingUtilities;
+import javax.swing.Timer;
 import javax.swing.tree.TreePath;
 
 /**
@@ -61,6 +63,10 @@ import javax.swing.tree.TreePath;
  * @author QuantConnect Corporation
  */
 public class WindowEventListener implements AWTEventListener {
+    private static final int MAX_MOBILE_AUTHENTICATOR_TIMING_WAITS = 3;
+    private static final String AUTO_RESTART_TOKEN_EXPIRED_MESSAGE =
+        "Soft token=0 received instead of expected permanent";
+
     private final IBAutomater automater;
     private final HashMap<Integer, String> handledEvents = new HashMap<Integer, String>(){
         {
@@ -77,8 +83,13 @@ public class WindowEventListener implements AWTEventListener {
 
     private int twoFactorConfirmationAttempts = 0;
     private final int maxTwoFactorConfirmationAttempts = 3;
-    
+
     private ScheduledFuture<?> twoFATimeoutFuture;
+    private boolean mobileAuthenticatorSubmissionReserved = false;
+    private boolean mobileAuthenticatorFailureReported = false;
+    private Window mobileAuthenticatorSelectorWindow;
+    private Window mobileAuthenticatorCodeWindow;
+    private Timer mobileAuthenticatorTimer;
 
     /**
      * Creates a new instance of the {@link WindowEventListener} class.
@@ -103,6 +114,12 @@ public class WindowEventListener implements AWTEventListener {
             this.automater.logMessage("Window event: [" + this.handledEvents.get(eventId) + "] - Window title: [" + Common.getTitle(window) + "] - Window name: [" + window.getName() + "]");
         }
         else {
+            return;
+        }
+
+        if (ShouldIgnoreWindowEventsAfterMobileAuthenticatorFailure(
+            this.automater.getSettings().getTwoFactorAuthenticationMethod(),
+            this.mobileAuthenticatorFailureReported)) {
             return;
         }
 
@@ -250,6 +267,11 @@ public class WindowEventListener implements AWTEventListener {
         this.automater.setMainWindow(window);
         this.automater.logMessage("Main window - Window title: [" + title + "] - Window name: [" + window.getName() + "]");
 
+        if (IsMobileAuthenticator() && this.mobileAuthenticatorSubmissionReserved) {
+            FailMobileAuthenticator("login restarted after code entry");
+            return true;
+        }
+
         boolean isLiveTradingMode = this.automater.getSettings().getTradingMode().equals("live");
 
         String buttonIbApiText = "IB API";
@@ -334,8 +356,16 @@ public class WindowEventListener implements AWTEventListener {
 
         String title = Common.getTitle(window);
 
-        if (title != null && (title.equals("Login failed")
-                || title.equals("Unrecognized Username or Password"))) {
+        if (IsGenericLoginFailureWindow(title, window)) {
+            if (IsMobileAuthenticator() && this.mobileAuthenticatorSubmissionReserved) {
+                FailMobileAuthenticator("login rejected");
+                JButton button = Common.getButton(window, "OK");
+                if (button != null) {
+                    button.doClick();
+                }
+                return true;
+            }
+
             JTextPane textPane = Common.getTextPane(window);
             String text = "";
             if (textPane != null) {
@@ -394,6 +424,7 @@ public class WindowEventListener implements AWTEventListener {
 
     /**
      * Detects and handles the "Too many failed login attempts" window.
+     * - reports a terminal failure for Mobile Authenticator authentication
      * - clicks the "OK" button
      * - closes the main window
      *
@@ -412,10 +443,22 @@ public class WindowEventListener implements AWTEventListener {
         if (text != null && text.contains("Too many failed login attempts")) {
             this.automater.logMessage(text);
 
+            boolean failMobileAuthenticator =
+                ShouldFailMobileAuthenticatorForTooManyLoginAttempts(
+                    this.automater.getSettings().getTwoFactorAuthenticationMethod(),
+                    this.mobileAuthenticatorSubmissionReserved);
+            if (failMobileAuthenticator) {
+                FailMobileAuthenticator("too many failed login attempts");
+            }
+
             JButton button = Common.getButton(window, "OK");
             if (button != null) {
                 this.automater.logMessage("Click button: [OK]");
                 button.doClick();
+            }
+
+            if (failMobileAuthenticator) {
+                return true;
             }
 
             this.automater.logMessage("Too many failed login attempts, closing IBGateway.");
@@ -909,7 +952,9 @@ public class WindowEventListener implements AWTEventListener {
 
     /**
      * Detects and handles the Re-login Required window.
-     * - clicks the "Re-login" button
+     * - clicks the "Re-login" button for a fresh authentication attempt
+     * - after a Mobile Authenticator code was reserved, cancels and reports a
+     *   terminal failure instead of submitting a second code
      *
      * @param window The window instance
      * @param eventId The id of the window event
@@ -924,6 +969,17 @@ public class WindowEventListener implements AWTEventListener {
         String title = Common.getTitle(window);
 
         if (title != null && title.equals("Re-login is required")) {
+            if (ShouldRejectMobileAuthenticatorRelogin(
+                    this.automater.getSettings().getTwoFactorAuthenticationMethod(),
+                    this.mobileAuthenticatorSubmissionReserved)) {
+                FailMobileAuthenticator("re-login requested after code submission");
+                JButton cancel = Common.getButton(window, "Cancel");
+                if (cancel != null) {
+                    cancel.doClick();
+                }
+                return true;
+            }
+
             if (this.twoFactorConfirmationAttempts >= this.maxTwoFactorConfirmationAttempts) {
                 this.automater.logMessage("Skipping Re-login, maximum attempts reached");
 
@@ -1150,7 +1206,7 @@ public class WindowEventListener implements AWTEventListener {
             return false;
         }
 
-        if (Common.getLabel(window, "Soft token=0 received instead of expected permanent") == null) {
+        if (!IsAutoRestartTokenExpired(window)) {
             return false;
         }
 
@@ -1212,8 +1268,9 @@ public class WindowEventListener implements AWTEventListener {
 
     /**
      * Detects and handles the Two Factor Authentication window.
-     * - if the window is closed within 150 seconds since it was opened, 2FA confirmation was successful,
-     * otherwise it is considered a timeout and other two attempts to login are performed
+     * - handles Mobile Authenticator selector and code-entry windows once
+     * - for IB Key, a window that remains open for 150 seconds is considered
+     *   timed out and up to two additional login attempts are performed
      *
      * @param window The window instance
      * @param eventId The id of the window event
@@ -1223,6 +1280,16 @@ public class WindowEventListener implements AWTEventListener {
     private boolean HandleTwoFactorAuthenticationWindow(Window window, int eventId) throws Exception {
         if (eventId != WindowEvent.WINDOW_OPENED && eventId != WindowEvent.WINDOW_CLOSED) {
             return false;
+        }
+
+        if (IsMobileAuthenticator()) {
+            try {
+                return HandleMobileAuthenticatorWindow(window, eventId);
+            }
+            catch (Exception exception) {
+                FailMobileAuthenticator("authentication automation failed");
+                return true;
+            }
         }
 
         String title = Common.getTitle(window);
@@ -1329,6 +1396,331 @@ public class WindowEventListener implements AWTEventListener {
         }
 
         return false;
+    }
+
+    /**
+     * Handles the Mobile Authenticator selector and code-entry dialog. A code is
+     * submitted at most once during the lifetime of this Java agent.
+     */
+    private boolean HandleMobileAuthenticatorWindow(Window window, int eventId) {
+        String title = Common.getTitle(window);
+
+        if (IsSecurityCodeCardWindow(title)) {
+            if (eventId == WindowEvent.WINDOW_OPENED) {
+                FailMobileAuthenticator("unsupported Security Code Card challenge");
+            }
+            return true;
+        }
+
+        if (title != null && title.equalsIgnoreCase("Second Factor Authentication")) {
+            if (eventId == WindowEvent.WINDOW_CLOSED) {
+                return true;
+            }
+            if (this.mobileAuthenticatorSubmissionReserved) {
+                if (window == this.mobileAuthenticatorCodeWindow) {
+                    // A duplicate OPENED event for the same challenge must not
+                    // rescan the now-populated code field or submit again.
+                    return true;
+                }
+                FailMobileAuthenticator("authentication restarted after code entry");
+                return true;
+            }
+
+            JTextArea textArea = Common.getTextArea(window);
+            boolean isSelector = textArea != null
+                && textArea.getText() != null
+                && textArea.getText().trim().equalsIgnoreCase("Select second factor device");
+            if (!isSelector) {
+                // Gateway 10.39 can use this title for either the authentication
+                // method selector or the direct Mobile Authenticator code prompt.
+                // The strict, effectively-visible control shape disambiguates
+                // the latter without matching hidden IB Key panels.
+                MobileAuthenticatorControls controls = GetMobileAuthenticatorControls(window);
+                if (controls != null) {
+                    return BeginMobileAuthenticatorCodeSubmission(window, controls);
+                }
+                FailMobileAuthenticator("unexpected authentication window");
+                return true;
+            }
+            if (window == this.mobileAuthenticatorSelectorWindow) {
+                return true;
+            }
+            if (this.mobileAuthenticatorSelectorWindow != null) {
+                FailMobileAuthenticator("authentication method selection restarted");
+                return true;
+            }
+
+            JButton button = Common.getButton(window, "OK");
+            JList list = Common.getList(window);
+            if (button == null || !button.isEnabled() || list == null) {
+                FailMobileAuthenticator("authentication method selector unavailable");
+                return true;
+            }
+
+            int methodIndex = FindUniqueMethodIndex(
+                list.getModel(), "Mobile Authenticator app");
+            if (methodIndex < 0) {
+                FailMobileAuthenticator("Mobile Authenticator method unavailable");
+                return true;
+            }
+
+            list.setSelectedIndex(methodIndex);
+            this.mobileAuthenticatorSelectorWindow = window;
+            this.automater.logMessage("2FA method: Mobile Authenticator app");
+            button.doClick();
+            return true;
+        }
+
+        if (title == null || !title.equalsIgnoreCase("Enter Security Code")) {
+            return false;
+        }
+        if (eventId == WindowEvent.WINDOW_CLOSED) {
+            return true;
+        }
+        if (this.mobileAuthenticatorSubmissionReserved) {
+            if (window == this.mobileAuthenticatorCodeWindow) {
+                // A duplicate OPENED event for the same challenge must not submit
+                // again or invalidate the in-flight first submission.
+                return true;
+            }
+            FailMobileAuthenticator("code entry already attempted");
+            return true;
+        }
+
+        MobileAuthenticatorControls controls = GetMobileAuthenticatorControls(window);
+        if (controls == null) {
+            FailMobileAuthenticator("unexpected code-entry window");
+            return true;
+        }
+
+        return BeginMobileAuthenticatorCodeSubmission(window, controls);
+    }
+
+    private boolean BeginMobileAuthenticatorCodeSubmission(
+        Window window, MobileAuthenticatorControls controls) {
+        // Reserve before scheduling or entering a code so duplicate window events
+        // cannot cause a second submission.
+        this.mobileAuthenticatorSubmissionReserved = true;
+        this.mobileAuthenticatorCodeWindow = window;
+        SubmitMobileAuthenticatorCodeWhenSafe(window, controls, 0);
+        return true;
+    }
+
+    private void SubmitMobileAuthenticatorCodeWhenSafe(
+        Window window, MobileAuthenticatorControls controls, int timingWaitCount) {
+        if (this.mobileAuthenticatorFailureReported) {
+            return;
+        }
+
+        int delay = TotpGenerator.getBoundaryDelayMilliseconds(System.currentTimeMillis());
+        if (delay == 0) {
+            SubmitMobileAuthenticatorCode(window, controls);
+            return;
+        }
+
+        if (timingWaitCount >= MAX_MOBILE_AUTHENTICATOR_TIMING_WAITS) {
+            FailMobileAuthenticator("safe code period unavailable");
+            return;
+        }
+
+        this.automater.logMessage("Waiting for a safe Mobile Authenticator code period");
+        this.mobileAuthenticatorTimer = new Timer(delay, event -> {
+            this.mobileAuthenticatorTimer = null;
+            SubmitMobileAuthenticatorCodeWhenSafe(
+                window, controls, timingWaitCount + 1);
+        });
+        this.mobileAuthenticatorTimer.setRepeats(false);
+        this.mobileAuthenticatorTimer.start();
+    }
+
+    private void SubmitMobileAuthenticatorCode(
+        Window window, MobileAuthenticatorControls expectedControls) {
+        try {
+            if (!SwingUtilities.isEventDispatchThread()) {
+                throw new IllegalStateException("Mobile Authenticator UI operation is not on the EDT");
+            }
+            if (!window.isDisplayable()) {
+                FailMobileAuthenticator("code-entry window closed before submission");
+                return;
+            }
+
+            MobileAuthenticatorControls controls = GetMobileAuthenticatorControls(window);
+            if (controls == null
+                || controls.codeField != expectedControls.codeField
+                || controls.submitButton != expectedControls.submitButton) {
+                FailMobileAuthenticator("code-entry window changed before submission");
+                return;
+            }
+
+            String code = this.automater.getSettings().getTotpGenerator().generateCurrent();
+            controls.codeField.setText(code);
+            this.automater.logMessage("Submit Mobile Authenticator code");
+            controls.submitButton.doClick();
+        }
+        catch (Exception exception) {
+            FailMobileAuthenticator("code submission failed");
+        }
+    }
+
+    static boolean HasMobileAuthenticatorControls(Container container) {
+        return GetMobileAuthenticatorControls(container) != null;
+    }
+
+    private static MobileAuthenticatorControls GetMobileAuthenticatorControls(Container container) {
+        if (!HasVisibleMobileAuthenticatorInstruction(container)) {
+            return null;
+        }
+
+        JTextField codeField = null;
+        JButton submitButton = null;
+        for (Component component : Common.getComponents(container)) {
+            if (component instanceof JTextField) {
+                JTextField candidate = (JTextField)component;
+                if (!IsEffectivelyVisible(candidate, container)
+                    || !candidate.isEnabled() || !candidate.isEditable()) {
+                    continue;
+                }
+                if (codeField != null || candidate.getText() == null
+                    || candidate.getText().length() != 0) {
+                    return null;
+                }
+                codeField = candidate;
+            }
+            else if (component instanceof JButton) {
+                JButton candidate = (JButton)component;
+                String buttonText = candidate.getText();
+                if (!IsEffectivelyVisible(candidate, container) || !candidate.isEnabled()
+                    || buttonText == null || !buttonText.trim().equalsIgnoreCase("OK")) {
+                    continue;
+                }
+                if (submitButton != null) {
+                    return null;
+                }
+                submitButton = candidate;
+            }
+        }
+
+        return codeField == null || submitButton == null
+            ? null
+            : new MobileAuthenticatorControls(codeField, submitButton);
+    }
+
+    private static boolean HasVisibleMobileAuthenticatorInstruction(Container container) {
+        for (Component component : Common.getComponents(container)) {
+            if (!IsEffectivelyVisible(component, container)) {
+                continue;
+            }
+
+            String text = null;
+            if (component instanceof JLabel) {
+                text = ((JLabel)component).getText();
+            }
+            else if (component instanceof JTextPane) {
+                text = ((JTextPane)component).getText();
+            }
+            else if (component instanceof JTextArea) {
+                text = ((JTextArea)component).getText();
+            }
+
+            if (text != null && text.replaceAll("\\<.*?\\>", " ")
+                .replaceAll("\\s+", " ")
+                .trim()
+                .toLowerCase(Locale.ROOT)
+                .contains("mobile authenticator app code")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean IsEffectivelyVisible(Component component, Container container) {
+        Component current = component;
+        while (current != null) {
+            if (!current.isVisible()) {
+                return false;
+            }
+            if (current == container) {
+                return true;
+            }
+            current = current.getParent();
+        }
+        return false;
+    }
+
+    static boolean IsSecurityCodeCardWindow(String title) {
+        return title != null && title.equalsIgnoreCase("Security Code Card Authentication");
+    }
+
+    static boolean ShouldRejectMobileAuthenticatorRelogin(
+        TwoFactorAuthenticationMethod method, boolean submissionReserved) {
+        return method == TwoFactorAuthenticationMethod.MOBILE_AUTHENTICATOR
+            && submissionReserved;
+    }
+
+    static boolean ShouldFailMobileAuthenticatorForTooManyLoginAttempts(
+        TwoFactorAuthenticationMethod method, boolean submissionReserved) {
+        // Exhausting login attempts is terminal before or after a code was reserved.
+        return method == TwoFactorAuthenticationMethod.MOBILE_AUTHENTICATOR;
+    }
+
+    static boolean IsAutoRestartTokenExpired(Container container) {
+        return Common.getLabel(container, AUTO_RESTART_TOKEN_EXPIRED_MESSAGE) != null;
+    }
+
+    static boolean IsGenericLoginFailureWindow(String title, Container container) {
+        return title != null
+            && (title.equals("Login failed")
+                || title.equals("Unrecognized Username or Password"))
+            && !IsAutoRestartTokenExpired(container);
+    }
+
+    static boolean ShouldIgnoreWindowEventsAfterMobileAuthenticatorFailure(
+        TwoFactorAuthenticationMethod method, boolean failureReported) {
+        return failureReported
+            && method == TwoFactorAuthenticationMethod.MOBILE_AUTHENTICATOR;
+    }
+
+    static int FindUniqueMethodIndex(ListModel model, String methodName) {
+        int result = -1;
+        for (int index = 0; index < model.getSize(); index++) {
+            Object value = model.getElementAt(index);
+            if (value != null && value.toString().trim().equalsIgnoreCase(methodName)) {
+                if (result >= 0) {
+                    return -1;
+                }
+                result = index;
+            }
+        }
+        return result;
+    }
+
+    private boolean IsMobileAuthenticator() {
+        return this.automater.getSettings().getTwoFactorAuthenticationMethod()
+            == TwoFactorAuthenticationMethod.MOBILE_AUTHENTICATOR;
+    }
+
+    private void FailMobileAuthenticator(String reason) {
+        if (this.mobileAuthenticatorFailureReported) {
+            return;
+        }
+        this.mobileAuthenticatorFailureReported = true;
+        if (this.mobileAuthenticatorTimer != null) {
+            this.mobileAuthenticatorTimer.stop();
+            this.mobileAuthenticatorTimer = null;
+        }
+        this.automater.logMessage(
+            IBAutomater.MOBILE_AUTHENTICATOR_FAILURE_MARKER + " " + reason);
+        CloseMainWindow();
+    }
+
+    private static final class MobileAuthenticatorControls {
+        private final JTextField codeField;
+        private final JButton submitButton;
+
+        private MobileAuthenticatorControls(JTextField codeField, JButton submitButton) {
+            this.codeField = codeField;
+            this.submitButton = submitButton;
+        }
     }
 
     /**
@@ -1466,9 +1858,9 @@ public class WindowEventListener implements AWTEventListener {
             return false;
         }
 
-        if (title.equals("Second Factor Authentication") ||
-            title.equals("Security Code Card Authentication") ||
-            title.equals("Enter security code")) {
+        if (title.equalsIgnoreCase("Second Factor Authentication") ||
+            title.equalsIgnoreCase("Security Code Card Authentication") ||
+            title.equalsIgnoreCase("Enter Security Code")) {
             return true;
         }
 
@@ -1785,6 +2177,11 @@ public class WindowEventListener implements AWTEventListener {
 
         components.forEach((component) -> {
             String text = "";
+            String componentDescription = component instanceof JTextField
+                ? component.getClass().getName()
+                    + ",name=" + component.getName()
+                    + ",enabled=" + component.isEnabled()
+                : component.toString();
             if (component instanceof JLabel)
             {
                 text = " - JLabel Text: [" + ((JLabel) component).getText() + "]";
@@ -1795,7 +2192,10 @@ public class WindowEventListener implements AWTEventListener {
             }
             else if (component instanceof JTextField)
             {
-                text = " - JTextField Text: [" + ((JTextField) component).getText() + "]";
+                // Login passwords and Mobile Authenticator codes are entered in
+                // editable text components. Do not include their value, or the
+                // component's potentially value-bearing toString(), in diagnostics.
+                text = " - JTextField Text: [REDACTED]";
             }
             else if (component instanceof JTextArea)
             {
@@ -1816,7 +2216,7 @@ public class WindowEventListener implements AWTEventListener {
                 // getMessage() can be null, which would abort the whole dump mid-window
                 text = " - JOptionPane Message: [" + String.valueOf(((JOptionPane) component).getMessage()) + "]";
             }
-            this.automater.logMessage("DEBUG: - Component: [" + component.toString() + "]" + text);
+            this.automater.logMessage("DEBUG: - Component: [" + componentDescription + "]" + text);
         });
     }
 

@@ -15,12 +15,18 @@
 
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Win32.SafeHandles;
 using Newtonsoft.Json.Linq;
 using NodaTime;
 
@@ -42,11 +48,14 @@ namespace QuantConnect.IBAutomater
         private readonly int _portNumber;
         private readonly bool _exportIbGatewayLogs;
         private readonly bool _useAccountGroupsWithAllocationMethods;
+        private readonly TwoFactorAuthenticationMethod _twoFactorAuthenticationMethod;
+        private readonly string _mobileAuthenticatorSecret;
 
         private volatile bool _isDisposeCalled;
 
         private readonly object _locker = new object();
         private Process _process;
+        private volatile bool _ownsJavaAgentConfigurationFile;
         private StartResult _lastStartResult = StartResult.Success;
         private readonly AutoResetEvent _ibAutomaterInitializeEvent = new AutoResetEvent(false);
         private bool _isRestartInProgress;
@@ -96,6 +105,11 @@ namespace QuantConnect.IBAutomater
         private const string _ibGatewayExecutableOriginalName = "ibgateway";
         private const string FinancialAdvisorAllocationGroupsConfigurationUnavailableMarker =
             "Error: Financial Advisor allocation groups configuration unavailable:";
+        private const string MobileAuthenticatorAuthenticationFailedMarker =
+            "Error: Mobile Authenticator authentication failed:";
+        private const int SetFileDescriptorFlags = 2;
+        private const int CloseOnExec = 1;
+        private const uint OwnerReadWriteMode = 0x180;
         private readonly string _ibGatewayExecutableName = $"{_ibGatewayExecutableOriginalName}1";
         private bool _renamedIbGatewayExcecutable;
 
@@ -144,6 +158,9 @@ namespace QuantConnect.IBAutomater
                 useAccountGroupsWithAllocationMethods =
                     config["ib-financial-advisors-unified-groups-enabled"].ToObject<bool>();
             }
+            var twoFactorAuthenticationMethod = ParseTwoFactorAuthenticationMethod(
+                config["ib-two-factor-authentication-method"]?.ToString());
+            var mobileAuthenticatorSecret = config["ib-mobile-authenticator-secret"]?.ToString();
 
             // Create a new instance of the IBAutomater class
             using var automater = new IBAutomater(
@@ -154,7 +171,9 @@ namespace QuantConnect.IBAutomater
                 tradingMode,
                 portNumber,
                 exportIbGatewayLogs,
-                useAccountGroupsWithAllocationMethods);
+                useAccountGroupsWithAllocationMethods,
+                twoFactorAuthenticationMethod,
+                mobileAuthenticatorSecret);
 
             // Attach the event handlers
             automater.OutputDataReceived += (s, e) => Console.WriteLine($"{DateTime.UtcNow:O} {e.Data}");
@@ -226,7 +245,58 @@ namespace QuantConnect.IBAutomater
             int portNumber,
             bool exportIbGatewayLogs,
             bool useAccountGroupsWithAllocationMethods)
+            : this(
+                ibDirectory,
+                ibVersion,
+                userName,
+                password,
+                tradingMode,
+                portNumber,
+                exportIbGatewayLogs,
+                useAccountGroupsWithAllocationMethods,
+                TwoFactorAuthenticationMethod.IbKey,
+                null)
         {
+        }
+
+        /// <summary>
+        /// Creates a new instance of the <see cref="IBAutomater"/> class
+        /// </summary>
+        /// <param name="ibDirectory">The root directory of IB Gateway</param>
+        /// <param name="ibVersion">The IB Gateway version to launch</param>
+        /// <param name="userName">The user name</param>
+        /// <param name="password">The password</param>
+        /// <param name="tradingMode">The trading mode ('paper' or 'live')</param>
+        /// <param name="portNumber">The API port number</param>
+        /// <param name="exportIbGatewayLogs">Export IB Gateway logs if true</param>
+        /// <param name="useAccountGroupsWithAllocationMethods">
+        /// The desired state of the Use Account Groups with Allocation Methods setting
+        /// </param>
+        /// <param name="twoFactorAuthenticationMethod">The two-factor authentication method</param>
+        /// <param name="mobileAuthenticatorSecret">
+        /// The permanent Base32 authenticator setup key. It is required when
+        /// <paramref name="twoFactorAuthenticationMethod"/> is
+        /// <see cref="TwoFactorAuthenticationMethod.MobileAuthenticator"/> and its Base32 encoding is
+        /// validated when the Java agent initializes
+        /// </param>
+        /// <exception cref="ArgumentException">
+        /// The authentication method is unsupported; the Mobile Authenticator setup key is missing;
+        /// a setup key is supplied for IB Key; or the setup key contains CR, LF, or NUL characters
+        /// </exception>
+        public IBAutomater(
+            string ibDirectory,
+            string ibVersion,
+            string userName,
+            string password,
+            string tradingMode,
+            int portNumber,
+            bool exportIbGatewayLogs,
+            bool useAccountGroupsWithAllocationMethods,
+            TwoFactorAuthenticationMethod twoFactorAuthenticationMethod,
+            string mobileAuthenticatorSecret)
+        {
+            ValidateTwoFactorAuthenticationSettings(twoFactorAuthenticationMethod, mobileAuthenticatorSecret);
+
             _ibDirectory = ibDirectory;
             _ibVersion = ibVersion;
             _userName = userName;
@@ -235,6 +305,10 @@ namespace QuantConnect.IBAutomater
             _portNumber = portNumber;
             _exportIbGatewayLogs = exportIbGatewayLogs;
             _useAccountGroupsWithAllocationMethods = useAccountGroupsWithAllocationMethods;
+            _twoFactorAuthenticationMethod = twoFactorAuthenticationMethod;
+            _mobileAuthenticatorSecret = string.IsNullOrWhiteSpace(mobileAuthenticatorSecret)
+                ? string.Empty
+                : mobileAuthenticatorSecret;
 
             _timerLogReader = new Timer(LogReaderTimerCallback, null, Timeout.Infinite, Timeout.Infinite);
 
@@ -257,10 +331,22 @@ namespace QuantConnect.IBAutomater
 
             StopGatewayRestartTimeoutMonitor();
 
-            // remove Java agent setting from IB configuration file
-            UpdateIbGatewayConfiguration(GetIbGatewayVersionPath(), false, false);
-
-            RenameIbGatewayProgram(true);
+            try
+            {
+                // remove Java agent setting from IB configuration file
+                UpdateIbGatewayConfiguration(GetIbGatewayVersionPath(), false, false);
+            }
+            finally
+            {
+                try
+                {
+                    DeleteJavaAgentConfigurationFile();
+                }
+                finally
+                {
+                    RenameIbGatewayProgram(true);
+                }
+            }
         }
 
         /// <summary>
@@ -305,9 +391,10 @@ namespace QuantConnect.IBAutomater
 
                 if (_lastStartResult.HasError)
                 {
-                    if (_lastStartResult.ErrorCode != ErrorCode.TwoFactorConfirmationTimeout)
+                    if (_lastStartResult.ErrorCode != ErrorCode.TwoFactorConfirmationTimeout
+                        || _twoFactorAuthenticationMethod != TwoFactorAuthenticationMethod.IbKey)
                     {
-                        // IBAutomater errors are unrecoverable, except for 2FA timeouts
+                        // IBAutomater errors are unrecoverable, except for IB Key 2FA timeouts
                         return _lastStartResult;
                     }
 
@@ -345,7 +432,6 @@ namespace QuantConnect.IBAutomater
                 }
 
                 UpdateIbGatewayIniFile();
-                var javaAgent = UpdateIbGatewayConfiguration(ibGatewayVersionPath, true, isRestart);
 
                 _timerLogReader.Change(Timeout.Infinite, Timeout.Infinite);
 
@@ -363,8 +449,13 @@ namespace QuantConnect.IBAutomater
                         {
                             // the file might still be locked by a gateway instance that is shutting down
                             OutputDataReceived?.Invoke(this, new OutputDataReceivedEventArgs(
-                                $"Could not delete the IBAutomater log file: {exception.Message}"));
+                                $"Could not delete the IBAutomater log file: {RedactSensitiveText(exception.Message)}"));
                         }
+                    }
+
+                    if (!File.Exists(_ibGatewayLogFileName))
+                    {
+                        _logLinesRead = 0;
                     }
                 }
 
@@ -380,7 +471,6 @@ namespace QuantConnect.IBAutomater
                 else
                 {
                     fileName = ibAutomaterPath;
-                    arguments = $"{ibGatewayExecutablePath} {javaAgent} {arguments}";
                 }
 
                 if (isRestart)
@@ -399,36 +489,55 @@ namespace QuantConnect.IBAutomater
                     }
                 }
 
-                var process = new Process
+                Process process;
+                try
                 {
-                    StartInfo = new ProcessStartInfo(fileName, arguments)
+                    // Write the credential handoff only after all other fallible pre-launch setup.
+                    var javaAgent = UpdateIbGatewayConfiguration(ibGatewayVersionPath, true, isRestart);
+                    if (!IsWindows)
                     {
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                        UseShellExecute = false,
-                        WindowStyle = ProcessWindowStyle.Hidden,
-                        CreateNoWindow = true
-                    },
-                    EnableRaisingEvents = true
-                };
+                        arguments = $"{ibGatewayExecutablePath} {javaAgent} {arguments}";
+                    }
 
-                process.OutputDataReceived += SendTraceLog;
-                process.ErrorDataReceived += SendErrorLog;
-                process.Exited += OnProcessExited;
+                    process = new Process
+                    {
+                        StartInfo = new ProcessStartInfo(fileName, arguments)
+                        {
+                            RedirectStandardOutput = true,
+                            RedirectStandardError = true,
+                            UseShellExecute = false,
+                            WindowStyle = ProcessWindowStyle.Hidden,
+                            CreateNoWindow = true
+                        },
+                        EnableRaisingEvents = true
+                    };
+
+                    process.OutputDataReceived += SendTraceLog;
+                    process.ErrorDataReceived += SendErrorLog;
+                    process.Exited += OnProcessExited;
+                }
+                catch
+                {
+                    _timerLogReader.Change(Timeout.Infinite, Timeout.Infinite);
+                    DeleteJavaAgentConfigurationFile();
+                    throw;
+                }
 
                 try
                 {
                     var started = process.Start();
                     if (!started)
                     {
+                        DeleteJavaAgentConfigurationFile();
                         return new StartResult(ErrorCode.ProcessStartFailed);
                     }
                 }
                 catch (Exception exception)
                 {
+                    DeleteJavaAgentConfigurationFile();
                     return new StartResult(
                         ErrorCode.ProcessStartFailed,
-                        exception.Message.Replace(_password, "***"));
+                        RedactSensitiveText(exception.Message));
                 }
 
                 OutputDataReceived?.Invoke(this, new OutputDataReceivedEventArgs($"IBAutomater process started - Id:{process.Id} - Name:{process.ProcessName} - InitializationTimeout:{_initializationTimeout}"));
@@ -448,14 +557,24 @@ namespace QuantConnect.IBAutomater
                             {
                                 process.Exited -= OnProcessExited;
                                 Stop();
+                                DeleteJavaAgentConfigurationFile();
                                 return _lastStartResult;
+                            }
+                            if (!_lastStartResult.HasError)
+                            {
+                                // Java premain consumed and deleted the handoff before reporting initialization.
+                                _ownsJavaAgentConfigurationFile = false;
                             }
                             break;
                         }
                     }
                     process.WaitForExit();
+                    LogReaderTimerCallback(null);
+                    DeleteJavaAgentConfigurationFile();
 
-                    if (_lastStartResult.ErrorCode == ErrorCode.FinancialAdvisorAllocationGroupsConfigurationUnavailable)
+                    if ((_twoFactorAuthenticationMethod == TwoFactorAuthenticationMethod.MobileAuthenticator
+                            && _lastStartResult.HasError)
+                        || _lastStartResult.ErrorCode == ErrorCode.FinancialAdvisorAllocationGroupsConfigurationUnavailable)
                     {
                         return _lastStartResult;
                     }
@@ -464,7 +583,8 @@ namespace QuantConnect.IBAutomater
                 {
                     // wait for completion of IBGateway login and configuration
                     string message;
-                    if (_ibAutomaterInitializeEvent.WaitOne(_initializationTimeout))
+                    var initializationEventReceived = _ibAutomaterInitializeEvent.WaitOne(_initializationTimeout);
+                    if (initializationEventReceived)
                     {
                         var processName = IsWindows ? Path.GetFileNameWithoutExtension(fileName) : "java";
                         var p = Process.GetProcessesByName(processName).FirstOrDefault();
@@ -501,11 +621,25 @@ namespace QuantConnect.IBAutomater
                             process.Exited -= OnProcessExited;
                             Stop();
                         }
+                        else if (_lastStartResult.ErrorCode == ErrorCode.MobileAuthenticatorAuthenticationFailed
+                            || (_twoFactorAuthenticationMethod == TwoFactorAuthenticationMethod.MobileAuthenticator
+                                && _lastStartResult.ErrorCode == ErrorCode.InitializationTimeout))
+                        {
+                            process.Exited -= OnProcessExited;
+                            EnsureGatewayIsStopped();
+                        }
 
+                        DeleteJavaAgentConfigurationFile();
                         message = $"IBAutomater error - Code: {_lastStartResult.ErrorCode} Message: {_lastStartResult.ErrorMessage}";
                         OutputDataReceived?.Invoke(this, new OutputDataReceivedEventArgs(message));
 
                         return _lastStartResult;
+                    }
+
+                    if (initializationEventReceived)
+                    {
+                        // Java premain consumed and deleted the handoff before reporting initialization.
+                        _ownsJavaAgentConfigurationFile = false;
                     }
                 }
             }
@@ -574,7 +708,7 @@ namespace QuantConnect.IBAutomater
             }
             catch (Exception exception)
             {
-                var message = $"IBAutomater error in timer - Message: {exception.Message}";
+                var message = $"IBAutomater error in timer - Message: {RedactSensitiveText(exception.Message)}";
                 OutputDataReceived?.Invoke(this, new OutputDataReceivedEventArgs(message));
             }
         }
@@ -583,10 +717,18 @@ namespace QuantConnect.IBAutomater
         {
             if (text != null)
             {
-                OutputDataReceived?.Invoke(this, new OutputDataReceivedEventArgs(text));
+                OutputDataReceived?.Invoke(this, new OutputDataReceivedEventArgs(RedactSensitiveText(text)));
 
-                // login failed
-                if (text.Contains("Login failed", StringComparison.InvariantCultureIgnoreCase))
+                // Mobile Authenticator failures are classified by the Java agent
+                if (TryGetMobileAuthenticatorAuthenticationFailureReason(text, out var failureReason))
+                {
+                    SetMobileAuthenticatorAuthenticationFailed(failureReason);
+                }
+
+                // login failed; in Mobile Authenticator mode raw window events are classified by Java
+                else if (text.Contains("Login failed", StringComparison.InvariantCultureIgnoreCase)
+                    && (_twoFactorAuthenticationMethod == TwoFactorAuthenticationMethod.IbKey
+                        || !text.Contains("Window event:", StringComparison.InvariantCultureIgnoreCase)))
                 {
                     if (text.Contains("user account-task is required", StringComparison.InvariantCultureIgnoreCase))
                     {
@@ -611,7 +753,8 @@ namespace QuantConnect.IBAutomater
                 // a security dialog (2FA) was detected by IBAutomater
                 else if (text.Contains("Second Factor Authentication", StringComparison.InvariantCultureIgnoreCase))
                 {
-                    if (text.Contains("[WINDOW_OPENED]", StringComparison.InvariantCultureIgnoreCase))
+                    if (_twoFactorAuthenticationMethod == TwoFactorAuthenticationMethod.IbKey
+                        && text.Contains("[WINDOW_OPENED]", StringComparison.InvariantCultureIgnoreCase))
                     {
                         // waiting for 2FA confirmation on IBKR mobile app
                         const string message = "Waiting for 2FA confirmation on IBKR mobile app (to be confirmed within 3 minutes).";
@@ -620,7 +763,8 @@ namespace QuantConnect.IBAutomater
                 }
 
                 // 2FA timed out for the maximum number of attempts
-                else if (text.Contains("2FA maximum attempts reached", StringComparison.InvariantCultureIgnoreCase))
+                else if (_twoFactorAuthenticationMethod == TwoFactorAuthenticationMethod.IbKey
+                    && text.Contains("2FA maximum attempts reached", StringComparison.InvariantCultureIgnoreCase))
                 {
                     const string message = "IB Automater 2FA timeout.";
                     OutputDataReceived?.Invoke(this, new OutputDataReceivedEventArgs(message));
@@ -630,8 +774,9 @@ namespace QuantConnect.IBAutomater
                 }
 
                 // a security dialog (code card) was detected by IBAutomater
-                else if (text.Contains("Security Code Card Authentication", StringComparison.InvariantCultureIgnoreCase)
-                    || text.Contains("Enter security code", StringComparison.InvariantCultureIgnoreCase))
+                else if (_twoFactorAuthenticationMethod == TwoFactorAuthenticationMethod.IbKey
+                    && (text.Contains("Security Code Card Authentication", StringComparison.InvariantCultureIgnoreCase)
+                        || text.Contains("Enter security code", StringComparison.InvariantCultureIgnoreCase)))
                 {
                     _lastStartResult = new StartResult(ErrorCode.SecurityDialogDetected);
                     _ibAutomaterInitializeEvent.Set();
@@ -649,7 +794,7 @@ namespace QuantConnect.IBAutomater
                 {
                     TraceIbLauncherLogFile();
 
-                    _lastStartResult = new StartResult(ErrorCode.JavaException, text);
+                    _lastStartResult = new StartResult(ErrorCode.JavaException, RedactSensitiveText(text));
                     _ibAutomaterInitializeEvent.Set();
                 }
 
@@ -665,7 +810,7 @@ namespace QuantConnect.IBAutomater
                 {
                     TraceIbLauncherLogFile();
 
-                    _lastStartResult = new StartResult(ErrorCode.UnknownMessageWindowDetected, text);
+                    _lastStartResult = new StartResult(ErrorCode.UnknownMessageWindowDetected, RedactSensitiveText(text));
                     _ibAutomaterInitializeEvent.Set();
                 }
 
@@ -675,7 +820,7 @@ namespace QuantConnect.IBAutomater
                 {
                     _lastStartResult = new StartResult(
                         ErrorCode.FinancialAdvisorAllocationGroupsConfigurationUnavailable,
-                        text);
+                        RedactSensitiveText(text));
                     _ibAutomaterInitializeEvent.Set();
                 }
 
@@ -714,6 +859,8 @@ namespace QuantConnect.IBAutomater
 
         private void OnProcessExited(object sender, EventArgs e)
         {
+            LogReaderTimerCallback(null);
+            TryDeleteJavaAgentConfigurationFile();
             OutputDataReceived?.Invoke(this, new OutputDataReceivedEventArgs("IBGateway process exited"));
 
             if (_isRestartInProgress)
@@ -728,8 +875,8 @@ namespace QuantConnect.IBAutomater
                 {
                     TraceIbLauncherLogFile();
 
-                    _lastStartResult =
-                        startResult.ErrorCode == ErrorCode.FinancialAdvisorAllocationGroupsConfigurationUnavailable
+                    _lastStartResult = startResult.ErrorCode == ErrorCode.FinancialAdvisorAllocationGroupsConfigurationUnavailable
+                        || startResult.ErrorCode == ErrorCode.MobileAuthenticatorAuthenticationFailed
                             ? startResult
                             : new StartResult(ErrorCode.InitializationTimeout, "Auto-restart timed out");
 
@@ -808,7 +955,7 @@ namespace QuantConnect.IBAutomater
             catch (Exception exception)
             {
                 OutputDataReceived?.Invoke(this, new OutputDataReceivedEventArgs(
-                    $"EnsureGatewayIsStopped(): error stopping the gateway: {exception.Message}"));
+                    $"EnsureGatewayIsStopped(): error stopping the gateway: {RedactSensitiveText(exception.Message)}"));
             }
         }
 
@@ -1114,6 +1261,53 @@ namespace QuantConnect.IBAutomater
             OutputDataReceived?.Invoke(this, new OutputDataReceivedEventArgs($"{fileName} {arguments}: process exit code: {p.ExitCode}"));
         }
 
+        private static TwoFactorAuthenticationMethod ParseTwoFactorAuthenticationMethod(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)
+                || value.Trim().Equals("ib-key", StringComparison.OrdinalIgnoreCase))
+            {
+                return TwoFactorAuthenticationMethod.IbKey;
+            }
+
+            if (value.Trim().Equals("mobile-authenticator", StringComparison.OrdinalIgnoreCase))
+            {
+                return TwoFactorAuthenticationMethod.MobileAuthenticator;
+            }
+
+            throw new ArgumentException("The two-factor authentication method is invalid.");
+        }
+
+        private static void ValidateTwoFactorAuthenticationSettings(
+            TwoFactorAuthenticationMethod twoFactorAuthenticationMethod,
+            string mobileAuthenticatorSecret)
+        {
+            if (twoFactorAuthenticationMethod != TwoFactorAuthenticationMethod.IbKey
+                && twoFactorAuthenticationMethod != TwoFactorAuthenticationMethod.MobileAuthenticator)
+            {
+                throw new ArgumentException("The two-factor authentication method is invalid.", nameof(twoFactorAuthenticationMethod));
+            }
+
+            if (!string.IsNullOrEmpty(mobileAuthenticatorSecret)
+                && (mobileAuthenticatorSecret.IndexOf('\r') >= 0
+                    || mobileAuthenticatorSecret.IndexOf('\n') >= 0
+                    || mobileAuthenticatorSecret.IndexOf('\0') >= 0))
+            {
+                throw new ArgumentException("The Mobile Authenticator setup key contains unsupported control characters.", nameof(mobileAuthenticatorSecret));
+            }
+
+            if (twoFactorAuthenticationMethod == TwoFactorAuthenticationMethod.MobileAuthenticator
+                && string.IsNullOrWhiteSpace(mobileAuthenticatorSecret))
+            {
+                throw new ArgumentException("A Mobile Authenticator setup key is required.", nameof(mobileAuthenticatorSecret));
+            }
+
+            if (twoFactorAuthenticationMethod == TwoFactorAuthenticationMethod.IbKey
+                && !string.IsNullOrWhiteSpace(mobileAuthenticatorSecret))
+            {
+                throw new ArgumentException("A Mobile Authenticator setup key cannot be used with IB Key.", nameof(mobileAuthenticatorSecret));
+            }
+        }
+
         private static bool IsLinux
         {
             get
@@ -1307,7 +1501,7 @@ namespace QuantConnect.IBAutomater
             OutputDataReceived?.Invoke(this, new OutputDataReceivedEventArgs($"Updating IBGateway configuration file: {ibGatewayConfigFile}"));
 
             var jarPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            var javaAgentConfigFileName = Path.Combine(jarPath, "IBAutomater.json");
+            var javaAgentConfigFileName = GetJavaAgentConfigurationFileName();
             var javaAgentConfig = $"-javaagent:{jarPath}/IBAutomater.jar={javaAgentConfigFileName}";
 
             // for linux we will use an env, since the options file is not respected
@@ -1344,15 +1538,240 @@ namespace QuantConnect.IBAutomater
 
             if (enableJavaAgent)
             {
-                File.WriteAllText(javaAgentConfigFileName,
-                    $"{_userName}\n{_password}\n{_tradingMode}\n{_portNumber}\n{_exportIbGatewayLogs}\n{isRestart}\n{_useAccountGroupsWithAllocationMethods}");
+                var twoFactorAuthenticationMethod = _twoFactorAuthenticationMethod == TwoFactorAuthenticationMethod.MobileAuthenticator
+                    ? "mobile-authenticator"
+                    : "ib-key";
+                var configuration = $"{_userName}\n{_password}\n{_tradingMode}\n{_portNumber}\n{_exportIbGatewayLogs}\n{isRestart}\n" +
+                    $"{_useAccountGroupsWithAllocationMethods}\n{twoFactorAuthenticationMethod}\n{_mobileAuthenticatorSecret}";
+
+                // A previous Java process may already have consumed its handoff.
+                _ownsJavaAgentConfigurationFile = false;
+                WriteJavaAgentConfigurationFile(javaAgentConfigFileName, configuration);
+                _ownsJavaAgentConfigurationFile = true;
             }
             else
             {
-                File.Delete(javaAgentConfigFileName);
+                DeleteJavaAgentConfigurationFile();
             }
 
             return javaAgentConfig;
+        }
+
+        internal static void WriteJavaAgentConfigurationFile(string fileName, string configuration)
+        {
+            var bytes = new UTF8Encoding(false).GetBytes(configuration);
+            WriteJavaAgentConfigurationFile(fileName, stream =>
+            {
+                stream.Write(bytes, 0, bytes.Length);
+                stream.Flush();
+            });
+        }
+
+        internal static void WriteJavaAgentConfigurationFile(string fileName, Action<FileStream> writeConfiguration)
+        {
+            // IBAutomater uses one fixed handoff path and does not support concurrent instances.
+            File.Delete(fileName);
+
+            var created = false;
+            try
+            {
+                using (var stream = CreateJavaAgentConfigurationFile(fileName, out created))
+                {
+                    writeConfiguration(stream);
+                }
+            }
+            catch (Exception exception)
+            {
+                if (created)
+                {
+                    try
+                    {
+                        File.Delete(fileName);
+                    }
+                    catch (Exception cleanupException)
+                    {
+                        throw new IOException(
+                            "Unable to remove the IBAutomater settings file after a write failure.",
+                            new AggregateException(exception, cleanupException));
+                    }
+                }
+                throw;
+            }
+        }
+
+        private static FileStream CreateJavaAgentConfigurationFile(string fileName, out bool created)
+        {
+            created = false;
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                using var windowsIdentity = WindowsIdentity.GetCurrent();
+                var currentUser = windowsIdentity.User
+                    ?? throw new IOException("Unable to identify the current Windows user.");
+                var fileSecurity = new FileSecurity();
+                fileSecurity.SetAccessRuleProtection(true, false);
+                fileSecurity.SetOwner(currentUser);
+                fileSecurity.AddAccessRule(new FileSystemAccessRule(
+                    currentUser, FileSystemRights.FullControl, AccessControlType.Allow));
+                var stream = FileSystemAclExtensions.Create(
+                    new FileInfo(fileName),
+                    FileMode.CreateNew,
+                    FileSystemRights.FullControl,
+                    FileShare.None,
+                    4096,
+                    FileOptions.None,
+                    fileSecurity);
+                created = true;
+                return stream;
+            }
+
+            var temporaryFileNameBuilder = new StringBuilder(fileName + ".XXXXXX");
+            var fileDescriptor = Mkstemp(temporaryFileNameBuilder);
+            if (fileDescriptor < 0)
+            {
+                throw new IOException(
+                    "Unable to create the IBAutomater settings file securely.",
+                    new Win32Exception(Marshal.GetLastWin32Error()));
+            }
+
+            var temporaryFileName = temporaryFileNameBuilder.ToString();
+            var handle = new SafeFileHandle(new IntPtr(fileDescriptor), true);
+            try
+            {
+                if (Fchmod(fileDescriptor, OwnerReadWriteMode) != 0)
+                {
+                    throw new IOException(
+                        "Unable to secure the IBAutomater settings file.",
+                        new Win32Exception(Marshal.GetLastWin32Error()));
+                }
+                if (Fcntl(fileDescriptor, SetFileDescriptorFlags, CloseOnExec) != 0)
+                {
+                    throw new IOException(
+                        "Unable to prevent inheritance of the IBAutomater settings file.",
+                        new Win32Exception(Marshal.GetLastWin32Error()));
+                }
+                if (Rename(temporaryFileName, fileName) != 0)
+                {
+                    throw new IOException(
+                        "Unable to install the IBAutomater settings file securely.",
+                        new Win32Exception(Marshal.GetLastWin32Error()));
+                }
+
+                created = true;
+                return new FileStream(handle, FileAccess.Write);
+            }
+            catch (Exception exception)
+            {
+                handle.Dispose();
+                if (!created)
+                {
+                    try
+                    {
+                        File.Delete(temporaryFileName);
+                    }
+                    catch (Exception cleanupException)
+                    {
+                        throw new IOException(
+                            "Unable to remove the temporary IBAutomater settings file.",
+                            new AggregateException(exception, cleanupException));
+                    }
+                }
+                throw;
+            }
+        }
+
+        [DllImport("libc", EntryPoint = "mkstemp", SetLastError = true, CharSet = CharSet.Ansi)]
+        private static extern int Mkstemp(StringBuilder template);
+
+        [DllImport("libc", EntryPoint = "fchmod", SetLastError = true)]
+        private static extern int Fchmod(int fileDescriptor, uint mode);
+
+        [DllImport("libc", EntryPoint = "fcntl", SetLastError = true)]
+        private static extern int Fcntl(int fileDescriptor, int command, int value);
+
+        [DllImport("libc", EntryPoint = "rename", SetLastError = true, CharSet = CharSet.Ansi)]
+        private static extern int Rename(string oldPath, string newPath);
+
+        private static string GetJavaAgentConfigurationFileName()
+        {
+            return Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "IBAutomater.json");
+        }
+
+        private void DeleteJavaAgentConfigurationFile()
+        {
+            if (!_ownsJavaAgentConfigurationFile)
+            {
+                return;
+            }
+
+            var fileName = GetJavaAgentConfigurationFileName();
+            File.Delete(fileName);
+            _ownsJavaAgentConfigurationFile = false;
+        }
+
+        private void TryDeleteJavaAgentConfigurationFile()
+        {
+            try
+            {
+                DeleteJavaAgentConfigurationFile();
+            }
+            catch (Exception exception)
+            {
+                try
+                {
+                    ErrorDataReceived?.Invoke(this, new ErrorDataReceivedEventArgs(
+                        $"Unable to delete the IBAutomater settings file: {RedactSensitiveText(exception.Message)}"));
+                }
+                catch
+                {
+                    // Cleanup and diagnostics must not interrupt process-exit lifecycle handling.
+                }
+            }
+        }
+
+        private bool TryGetMobileAuthenticatorAuthenticationFailureReason(string text, out string reason)
+        {
+            reason = null;
+            return _twoFactorAuthenticationMethod == TwoFactorAuthenticationMethod.MobileAuthenticator
+                && TryParseMobileAuthenticatorAuthenticationFailure(text, out reason);
+        }
+
+        internal static bool TryParseMobileAuthenticatorAuthenticationFailure(string text, out string reason)
+        {
+            reason = null;
+            if (text == null
+                || !text.StartsWith(MobileAuthenticatorAuthenticationFailedMarker, StringComparison.InvariantCultureIgnoreCase))
+            {
+                return false;
+            }
+
+            reason = text.Substring(MobileAuthenticatorAuthenticationFailedMarker.Length).Trim();
+            return true;
+        }
+
+        private void SetMobileAuthenticatorAuthenticationFailed(string reason)
+        {
+            _lastStartResult = new StartResult(
+                ErrorCode.MobileAuthenticatorAuthenticationFailed,
+                RedactSensitiveText(reason));
+            _ibAutomaterInitializeEvent.Set();
+        }
+
+        private string RedactSensitiveText(string text)
+        {
+            if (text == null)
+            {
+                return null;
+            }
+
+            foreach (var sensitiveValue in new[] { _password, _mobileAuthenticatorSecret }
+                .Where(value => !string.IsNullOrEmpty(value))
+                .Distinct()
+                .OrderByDescending(value => value.Length))
+            {
+                text = text.Replace(sensitiveValue, "***");
+            }
+
+            return text;
         }
 
         private static int GetProcessExitCode(Process process)
@@ -1386,14 +1805,16 @@ namespace QuantConnect.IBAutomater
                             string line;
                             while ((line = reader.ReadLine()) != null)
                             {
-                                OutputDataReceived?.Invoke(this, new OutputDataReceivedEventArgs($"[IB Launcher] {line}"));
+                                OutputDataReceived?.Invoke(this, new OutputDataReceivedEventArgs(
+                                    $"[IB Launcher] {RedactSensitiveText(line)}"));
                             }
                         }
                     }
                 }
                 catch (Exception exception)
                 {
-                    OutputDataReceived?.Invoke(this, new OutputDataReceivedEventArgs($"Error reading IB launcher log file: {exception.Message}"));
+                    OutputDataReceived?.Invoke(this, new OutputDataReceivedEventArgs(
+                        $"Error reading IB launcher log file: {RedactSensitiveText(exception.Message)}"));
                 }
             }
         }
@@ -1471,7 +1892,12 @@ namespace QuantConnect.IBAutomater
                 }
                 else
                 {
-                    ErrorDataReceived?.Invoke(this, new ErrorDataReceivedEventArgs(e.Data.Replace(_password, "***")));
+                    if (TryGetMobileAuthenticatorAuthenticationFailureReason(e.Data, out var failureReason))
+                    {
+                        SetMobileAuthenticatorAuthenticationFailed(failureReason);
+                    }
+
+                    ErrorDataReceived?.Invoke(this, new ErrorDataReceivedEventArgs(RedactSensitiveText(e.Data)));
                 }
             }
         }
@@ -1480,7 +1906,12 @@ namespace QuantConnect.IBAutomater
         {
             if (e.Data != null)
             {
-                OutputDataReceived?.Invoke(this, new OutputDataReceivedEventArgs(e.Data.Replace(_password, "***")));
+                if (TryGetMobileAuthenticatorAuthenticationFailureReason(e.Data, out var failureReason))
+                {
+                    SetMobileAuthenticatorAuthenticationFailed(failureReason);
+                }
+
+                OutputDataReceived?.Invoke(this, new OutputDataReceivedEventArgs(RedactSensitiveText(e.Data)));
             }
         }
     }

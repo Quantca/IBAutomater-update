@@ -63,6 +63,34 @@ The value is fixed when the IBAutomater instance is constructed and is applied a
 
 For standalone execution, `config.json` can optionally specify `"ib-financial-advisors-unified-groups-enabled": true`; when omitted, the setting defaults to `false`. Library consumers, including LEAN, must pass the corresponding value to the constructor themselves.
 
+IB Key remains the default two-factor authentication method. To use a standard TOTP authenticator, pass
+`TwoFactorAuthenticationMethod.MobileAuthenticator` and the permanent setup key as the final two constructor
+arguments:
+
+``` C#
+_ibAutomater = new IBAutomater.IBAutomater(
+    ibDirectory,
+    ibVersion,
+    userName,
+    password,
+    tradingMode,
+    port,
+    exportIbGatewayLogs,
+    useAccountGroupsWithAllocationMethods,
+    TwoFactorAuthenticationMethod.MobileAuthenticator,
+    mobileAuthenticatorSetupKey);
+```
+
+For standalone execution, use `"ib-two-factor-authentication-method": "mobile-authenticator"` together with
+`"ib-mobile-authenticator-secret"`. Keep this permanent setup key in protected configuration and never substitute
+the current six-digit authentication code. Omitting both settings retains IB Key behavior. Before each launch,
+IBAutomater removes any stale fixed-path Java-agent handoff and creates its replacement with owner-only access before
+writing credentials. POSIX systems use a mode-`0600` file created beside the handoff and atomically renamed while
+empty; Windows creates the fixed file with a protected, current-user-only access-control list. Credentials are written
+and flushed through the same open stream. The Java agent deletes the handoff after reading it, while C# cleanup covers
+failed startup and disposal. These controls protect against other operating-system users, not processes running as
+the same user. Concurrent IBAutomater instances sharing an installation directory are unsupported.
+
 ## How it works
 
 IBAutomater has been implemented as two components:
@@ -197,11 +225,27 @@ and delay further connection attempts until the next Sunday at 4:00 PM ET
 
 ## Two-factor authentication (2FA)
 
-The only 2FA method supported by IBAutomater is the IBKR mobile application with seamless authentication enabled.
+IBAutomater supports IB Key seamless authentication through the IBKR mobile application and time-based codes from
+a standard Mobile Authenticator application. IB Key is the default for existing callers.
 
-The 2FA request will only be sent to the phone when logging in for the first time at startup and once per week after the weekly auto-restart.
+Mobile Authenticator mode generates and submits at most one current code in each Gateway process. It never retries with
+another code in that process. The C# constructor validates the authentication-method and setup-key combination and
+rejects unsupported control characters; the Java agent validates the Base32 setup key during startup. If configuration,
+automation, or authentication cannot be completed, startup fails and the Gateway is stopped. The terminal result is
+retained, so after correcting the cause the client must dispose and recreate the IBAutomater instance, or redeploy,
+before trying again. To reduce failures from small clock differences, code submission is deferred during the first and
+last three seconds of each 30-second period.
 
-When this method is selected, IB Gateway shows a 2FA popup window (after the user/password credentials have been validated)
+If a weekly restart requires re-login, either authentication method clicks **Re-login** only for a fresh authentication
+attempt. If the auto-restart token has expired, IBAutomater closes the unauthenticated Gateway and raises `Exited`
+without an authentication error; the client must then start a cold login, which can submit one code using the retained
+configuration. LEAN's Interactive Brokers brokerage already performs this cold-start recovery. If a Mobile Authenticator
+code has already been reserved in the current Gateway process, a subsequent re-login request is cancelled and reported
+as terminal, preserving the one-code-per-process policy.
+
+For IB Key, the 2FA request will only be sent to the phone when logging in for the first time at startup and once per week after the weekly auto-restart.
+
+When IB Key is selected, IB Gateway shows a 2FA popup window (after the user/password credentials have been validated)
 and waits for the user to complete the authentication by entering the PIN on the phone.
 
 If the PIN is correct, the popup window will automatically close and both IB Gateway and IBAutomater will proceed normally.
