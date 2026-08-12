@@ -103,7 +103,7 @@ namespace QuantConnect.IBAutomater
         LoginFailedAccountTasksRequired,
 
         /// <summary>
-        /// The requested Financial Advisor allocation groups configuration is unavailable
+        /// The requested Financial Advisor allocation groups setting could not be applied or verified
         /// </summary>
         FinancialAdvisorAllocationGroupsConfigurationUnavailable
     }
@@ -182,8 +182,9 @@ namespace QuantConnect.IBAutomater
                 },
                 {
                     ErrorCode.FinancialAdvisorAllocationGroupsConfigurationUnavailable,
-                    "Unified Financial Advisor allocation groups require IB Gateway v983 or later and the Use Account Groups with Allocation Methods setting to be available. " +
-                    "On a supported version, verify that the current account and configuration expose the setting, then correct the environment and redeploy."
+                    "The requested Use Account Groups with Allocation Methods setting could not be applied or verified. " +
+                    "Enabling unified Financial Advisor allocation groups requires IB Gateway v983 or later. " +
+                    "Verify the Gateway version, account configuration, and requested setting before redeploying."
                 }
             };
 

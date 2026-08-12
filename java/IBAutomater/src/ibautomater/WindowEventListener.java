@@ -17,6 +17,7 @@ package ibautomater;
 
 import java.awt.AWTEvent;
 import java.awt.Component;
+import java.awt.Container;
 import java.awt.Toolkit;
 import java.awt.Window;
 import java.awt.event.AWTEventListener;
@@ -25,6 +26,7 @@ import java.io.File;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
@@ -35,6 +37,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JFrame;
@@ -717,45 +720,15 @@ public class WindowEventListener implements AWTEventListener {
         }
 
         // v983+
-        String faText = "Use Account Groups with Allocation Methods";
         boolean useAccountGroupsWithAllocationMethods =
             this.automater.getSettings().getUseAccountGroupsWithAllocationMethods();
-        JCheckBox faCheckBox = null;
-        for (Component component : Common.getComponents(window)) {
-            if (component instanceof JCheckBox) {
-                JCheckBox checkBox = (JCheckBox)component;
-                String checkBoxText = checkBox.getText();
-                if (checkBoxText != null &&
-                    checkBoxText.regionMatches(true, 0, faText, 0, faText.length())) {
-                    faCheckBox = checkBox;
-                    break;
-                }
-            }
-        }
-        if (faCheckBox == null) {
-            if (useAccountGroupsWithAllocationMethods) {
-                this.automater.logMessage(
-                    "Error: Financial Advisor allocation groups configuration unavailable: [" + faText +
-                    "] - Reason: [check box not found]");
-            }
-        }
-        else if (useAccountGroupsWithAllocationMethods) {
-            if (!faCheckBox.isSelected() && !faCheckBox.isEnabled()) {
-                this.automater.logMessage(
-                    "Error: Financial Advisor allocation groups configuration unavailable: [" + faText +
-                    "] - Reason: [check box is disabled and unchecked]");
-            }
-            else {
-                if (!faCheckBox.isSelected()) {
-                    this.automater.logMessage("Select checkbox: [" + faText + "]");
-                    faCheckBox.setSelected(true);
-                }
-                this.automater.logMessage("Checkbox: [" + faText + "] - Selected: [true]");
-            }
-        }
-        else if (faCheckBox.isSelected()) {
-            this.automater.logMessage("Unselect checkbox: [" + faText + "]");
-            faCheckBox.setSelected(false);
+        String financialAdvisorCheckBoxError = ConfigureFinancialAdvisorAllocationGroupsCheckBox(
+            window, useAccountGroupsWithAllocationMethods, this.automater::logMessage);
+        if (financialAdvisorCheckBoxError != null) {
+            this.automater.logMessage(
+                "Error: Financial Advisor allocation groups configuration unavailable: [" +
+                "Use Account Groups with Allocation Methods] - Reason: [" +
+                financialAdvisorCheckBoxError + "]");
         }
 
         Common.selectTreeNode(tree, new TreePath(new String[]{"Configuration", "API", "Precautions"}));
@@ -847,9 +820,52 @@ public class WindowEventListener implements AWTEventListener {
             SaveIBLogs();
         }
 
-        this.automater.logMessage("Configuration settings updated.");
+        if (financialAdvisorCheckBoxError == null) {
+            this.automater.logMessage("Configuration settings updated.");
+        }
 
         return true;
+    }
+
+    static String ConfigureFinancialAdvisorAllocationGroupsCheckBox(
+        Container container, boolean desiredState, Consumer<String> log) {
+        String checkBoxText = "Use Account Groups with Allocation Methods";
+        List<JCheckBox> matches = new ArrayList<>();
+        for (Component component : Common.getComponents(container)) {
+            if (component instanceof JCheckBox) {
+                JCheckBox checkBox = (JCheckBox)component;
+                String text = checkBox.getText();
+                if (text != null && text.regionMatches(true, 0, checkBoxText, 0, checkBoxText.length())) {
+                    matches.add(checkBox);
+                }
+            }
+        }
+
+        if (matches.isEmpty()) {
+            return desiredState ? "check box not found" : null;
+        }
+        if (desiredState && matches.size() != 1) {
+            return "multiple matching check boxes found";
+        }
+
+        for (JCheckBox checkBox : matches) {
+            if (checkBox.isSelected() != desiredState) {
+                if (desiredState && !checkBox.isEnabled()) {
+                    log.accept("Checkbox: [" + checkBoxText + "] - Selected: [" +
+                        checkBox.isSelected() + "]");
+                    return "check box is disabled and unchecked";
+                }
+                log.accept((desiredState ? "Select" : "Unselect") + " checkbox: [" + checkBoxText + "]");
+                checkBox.setSelected(desiredState);
+            }
+
+            boolean actualState = checkBox.isSelected();
+            log.accept("Checkbox: [" + checkBoxText + "] - Selected: [" + actualState + "]");
+            if (actualState != desiredState) {
+                return "check box did not retain the requested state";
+            }
+        }
+        return null;
     }
 
     /**

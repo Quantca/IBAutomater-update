@@ -440,7 +440,25 @@ namespace QuantConnect.IBAutomater
 
                 if (waitForExit)
                 {
+                    while (!process.WaitForExit(250))
+                    {
+                        if (_ibAutomaterInitializeEvent.WaitOne(0))
+                        {
+                            if (_lastStartResult.ErrorCode == ErrorCode.FinancialAdvisorAllocationGroupsConfigurationUnavailable)
+                            {
+                                process.Exited -= OnProcessExited;
+                                Stop();
+                                return _lastStartResult;
+                            }
+                            break;
+                        }
+                    }
                     process.WaitForExit();
+
+                    if (_lastStartResult.ErrorCode == ErrorCode.FinancialAdvisorAllocationGroupsConfigurationUnavailable)
+                    {
+                        return _lastStartResult;
+                    }
                 }
                 else
                 {
@@ -478,6 +496,12 @@ namespace QuantConnect.IBAutomater
 
                     if (_lastStartResult.HasError)
                     {
+                        if (_lastStartResult.ErrorCode == ErrorCode.FinancialAdvisorAllocationGroupsConfigurationUnavailable)
+                        {
+                            process.Exited -= OnProcessExited;
+                            Stop();
+                        }
+
                         message = $"IBAutomater error - Code: {_lastStartResult.ErrorCode} Message: {_lastStartResult.ErrorMessage}";
                         OutputDataReceived?.Invoke(this, new OutputDataReceivedEventArgs(message));
 
@@ -652,6 +676,7 @@ namespace QuantConnect.IBAutomater
                     _lastStartResult = new StartResult(
                         ErrorCode.FinancialAdvisorAllocationGroupsConfigurationUnavailable,
                         text);
+                    _ibAutomaterInitializeEvent.Set();
                 }
 
                 // initialization completed
