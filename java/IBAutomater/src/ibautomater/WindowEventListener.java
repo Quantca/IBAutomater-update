@@ -445,8 +445,7 @@ public class WindowEventListener implements AWTEventListener {
 
             boolean failMobileAuthenticator =
                 ShouldFailMobileAuthenticatorForTooManyLoginAttempts(
-                    this.automater.getSettings().getTwoFactorAuthenticationMethod(),
-                    this.mobileAuthenticatorSubmissionReserved);
+                    this.automater.getSettings().getTwoFactorAuthenticationMethod());
             if (failMobileAuthenticator) {
                 FailMobileAuthenticator("too many failed login attempts");
             }
@@ -1658,7 +1657,7 @@ public class WindowEventListener implements AWTEventListener {
     }
 
     static boolean ShouldFailMobileAuthenticatorForTooManyLoginAttempts(
-        TwoFactorAuthenticationMethod method, boolean submissionReserved) {
+        TwoFactorAuthenticationMethod method) {
         // Exhausting login attempts is terminal before or after a code was reserved.
         return method == TwoFactorAuthenticationMethod.MOBILE_AUTHENTICATOR;
     }

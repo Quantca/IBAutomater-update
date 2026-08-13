@@ -208,13 +208,9 @@ public final class IBAutomaterSelfTest {
         AssertTrue(!WindowEventListener.ShouldRejectMobileAuthenticatorRelogin(
             TwoFactorAuthenticationMethod.IB_KEY, true));
         AssertTrue(WindowEventListener.ShouldFailMobileAuthenticatorForTooManyLoginAttempts(
-            TwoFactorAuthenticationMethod.MOBILE_AUTHENTICATOR, false));
-        AssertTrue(WindowEventListener.ShouldFailMobileAuthenticatorForTooManyLoginAttempts(
-            TwoFactorAuthenticationMethod.MOBILE_AUTHENTICATOR, true));
+            TwoFactorAuthenticationMethod.MOBILE_AUTHENTICATOR));
         AssertTrue(!WindowEventListener.ShouldFailMobileAuthenticatorForTooManyLoginAttempts(
-            TwoFactorAuthenticationMethod.IB_KEY, false));
-        AssertTrue(!WindowEventListener.ShouldFailMobileAuthenticatorForTooManyLoginAttempts(
-            TwoFactorAuthenticationMethod.IB_KEY, true));
+            TwoFactorAuthenticationMethod.IB_KEY));
 
         JPanel tokenExpired = new JPanel();
         tokenExpired.add(new JLabel(
