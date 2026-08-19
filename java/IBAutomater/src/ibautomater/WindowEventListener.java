@@ -46,6 +46,7 @@ import javax.swing.JList;
 import javax.swing.JMenuItem;
 import javax.swing.JOptionPane;
 import javax.swing.JRadioButton;
+import javax.swing.JTable;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.JTextPane;
@@ -664,6 +665,8 @@ public class WindowEventListener implements AWTEventListener {
      *   - sets the "Use Account Groups with Allocation Methods" check box according to configuration
      * - in the Configuration/API/Precautions panel:
      *   - selects the "Bypass Order Precautions for API Orders" check box
+     * - in the Configuration/Messages panel:
+     *   - disables the "Group Allocation Warning" message for unified Financial Advisor groups
      * - in the Configuration/Lock and Exit panel:
      *   - selects the "Auto restart" check box
      * - if requested, opens the Export IB logs window
@@ -757,6 +760,11 @@ public class WindowEventListener implements AWTEventListener {
                     checkBox.setSelected(true);
                 }
             }
+        }
+
+        if (useAccountGroupsWithAllocationMethods) {
+            Common.selectTreeNode(tree, new TreePath(new String[]{"Configuration", "Messages"}));
+            DisableGroupAllocationWarning(window, this.automater::logMessage);
         }
 
         Common.selectTreeNode(tree, new TreePath(new String[]{"Configuration", "Lock and Exit"}));
@@ -868,6 +876,51 @@ public class WindowEventListener implements AWTEventListener {
         return null;
     }
 
+    static void DisableGroupAllocationWarning(Container container, Consumer<String> log) {
+        String messageText = "Group Allocation Warning";
+        for (Component component : Common.getComponents(container)) {
+            if (!(component instanceof JTable)) {
+                continue;
+            }
+
+            JTable table = (JTable)component;
+            int messageColumn = -1;
+            int enabledColumn = -1;
+            for (int column = 0; column < table.getColumnCount(); column++) {
+                String columnName = table.getColumnName(column);
+                if ("Message".equalsIgnoreCase(columnName) ||
+                    "Message Name".equalsIgnoreCase(columnName)) {
+                    messageColumn = column;
+                }
+                else if ("Enabled".equalsIgnoreCase(columnName)) {
+                    enabledColumn = column;
+                }
+            }
+            if (messageColumn == -1 || enabledColumn == -1) {
+                continue;
+            }
+
+            for (int row = 0; row < table.getRowCount(); row++) {
+                Object message = table.getValueAt(row, messageColumn);
+                if (message == null || !messageText.equalsIgnoreCase(message.toString())) {
+                    continue;
+                }
+
+                boolean enabled = Boolean.TRUE.equals(table.getValueAt(row, enabledColumn));
+                log.accept("Message: [" + messageText + "] - Enabled: [" + enabled + "]");
+                if (enabled) {
+                    log.accept("Disable message: [" + messageText + "]");
+                    table.setValueAt(Boolean.FALSE, row, enabledColumn);
+                    log.accept("Message: [" + messageText + "] - Enabled: [" +
+                        Boolean.TRUE.equals(table.getValueAt(row, enabledColumn)) + "]");
+                }
+                return;
+            }
+        }
+
+        log.accept("Message setting not found: [" + messageText + "]");
+    }
+
     /**
      * Detects and handles the Existing Session Detected window.
      * - clicks the "Exit Application" button
@@ -958,8 +1011,8 @@ public class WindowEventListener implements AWTEventListener {
     /**
      * Detects and handles the Financial Advisor warning window.
      * - logs the window structure
-     * - clicks the "Yes" button
-     * - checks whether the window closed after the click
+     * - clicks the "Accept and Continue" configuration button or the "Yes" order button
+     * - checks whether the window closed after an order-warning click
      *
      * @param window The window instance
      * @param eventId The id of the window event
@@ -976,6 +1029,14 @@ public class WindowEventListener implements AWTEventListener {
         if (title != null && title.contains("Financial Advisor Warning")) {
             
             LogWindowContents(window);
+
+            String confirmationButtonText = "Accept and Continue";
+            JButton confirmationButton = Common.getButton(window, confirmationButtonText);
+            if (confirmationButton != null) {
+                this.automater.logMessage("Click button: [" + confirmationButtonText + "]");
+                confirmationButton.doClick();
+                return true;
+            }
 
             String buttonText = "Yes";
             JButton button = Common.getButton(window, buttonText);

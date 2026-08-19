@@ -61,6 +61,8 @@ The original seven-parameter constructor remains supported and retains IBAutomat
 
 The value is fixed when the IBAutomater instance is constructed and is applied again on explicit and automatic IB Gateway restarts. IBAutomater reads the control again after changing it and reports its actual state. When `true`, startup or restart fails and the Gateway is stopped if the v983+ control is absent, disabled while unchecked, or ambiguous. Under either requested state, startup also fails if a present control does not retain that state. Unified Financial Advisor allocation-group routing cannot be established safely after either failure. The returned `StartResult` explains how to verify the Gateway version and account configuration before redeploying.
 
+When unified Financial Advisor groups are enabled, IBAutomater also disables **Messages → Group Allocation Warning** when that setting is present and accepts the Gateway's resulting Financial Advisor confirmation. The warning setting is left unchanged when unified groups are disabled.
+
 For standalone execution, `config.json` can optionally specify `"ib-financial-advisors-unified-groups-enabled": true`; when omitted, the setting defaults to `false`. Library consumers, including LEAN, must pass the corresponding value to the constructor themselves.
 
 ## How it works

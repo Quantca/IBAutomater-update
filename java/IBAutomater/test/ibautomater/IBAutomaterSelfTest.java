@@ -15,6 +15,8 @@ import java.util.ArrayList;
 import java.util.List;
 import javax.swing.JCheckBox;
 import javax.swing.JPanel;
+import javax.swing.JTable;
+import javax.swing.table.DefaultTableModel;
 
 /**
  * Dependency-free tests for Financial Advisor Gateway configuration helpers.
@@ -25,11 +27,63 @@ public final class IBAutomaterSelfTest {
 
     public static void main(String[] args) {
         TestFinancialAdvisorAllocationGroupsCheckBox();
+        TestGroupAllocationWarningMessage();
 
         if (assertions == 0) {
             throw new AssertionError("No self-test assertions executed");
         }
         System.out.println("IBAutomater Java self-tests passed: " + assertions + " assertions");
+    }
+
+    private static void TestGroupAllocationWarningMessage() {
+        List<String> messages = new ArrayList<>();
+        JPanel panel = new JPanel();
+        JTable table = CreateMessagesTable(Boolean.TRUE);
+        panel.add(table);
+
+        WindowEventListener.DisableGroupAllocationWarning(panel, messages::add);
+        AssertEquals(Boolean.FALSE, table.getValueAt(1, 2));
+        AssertEquals(Boolean.TRUE, table.getValueAt(0, 2));
+        AssertEquals("Message: [Group Allocation Warning] - Enabled: [false]",
+            messages.get(messages.size() - 1));
+
+        messages.clear();
+        WindowEventListener.DisableGroupAllocationWarning(panel, messages::add);
+        AssertEquals(Boolean.FALSE, table.getValueAt(1, 2));
+        AssertEquals(1, messages.size());
+        AssertEquals("Message: [Group Allocation Warning] - Enabled: [false]", messages.get(0));
+
+        panel = new JPanel();
+        table = CreateMessagesTable(Boolean.TRUE);
+        table.moveColumn(2, 0);
+        panel.add(table);
+        WindowEventListener.DisableGroupAllocationWarning(panel, messages::add);
+        AssertEquals(Boolean.FALSE, table.getValueAt(1, 0));
+
+        panel = new JPanel();
+        table = new JTable(new Object[][]{{"group allocation warning", Boolean.TRUE}},
+            new Object[]{"Message", "Enabled"});
+        panel.add(table);
+        WindowEventListener.DisableGroupAllocationWarning(panel, messages::add);
+        AssertEquals(Boolean.FALSE, table.getValueAt(0, 1));
+
+        messages.clear();
+        panel = new JPanel();
+        table = new JTable(new Object[][]{{"Other Warning", Boolean.TRUE}},
+            new Object[]{"Message", "Enabled"});
+        panel.add(table);
+        WindowEventListener.DisableGroupAllocationWarning(panel, messages::add);
+        AssertEquals(Boolean.TRUE, table.getValueAt(0, 1));
+        AssertEquals("Message setting not found: [Group Allocation Warning]", messages.get(0));
+    }
+
+    private static JTable CreateMessagesTable(Boolean groupAllocationWarningEnabled) {
+        return new JTable(new DefaultTableModel(
+            new Object[][]{
+                {"Other Warning", "Ask", Boolean.TRUE},
+                {"Group Allocation Warning", "Ask", groupAllocationWarningEnabled}
+            },
+            new Object[]{"Message Name", "Default Action", "Enabled"}));
     }
 
     private static void TestFinancialAdvisorAllocationGroupsCheckBox() {
